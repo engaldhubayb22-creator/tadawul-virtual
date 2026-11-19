@@ -18,7 +18,8 @@ class MarketController extends Controller
     public function index(): JsonResponse
     {
         $rows = DB::select(<<<'SQL'
-            SELECT c.symbol, c.name, s.name AS sector, c.status, c.tick_size,
+            SELECT c.symbol, c.name, s.name AS sector, c.status, c.tick_size, c.ref_price,
+                   c.shares_outstanding, c.founder_shares, c.par_value, c.equity, c.net_income,
                    d.prev_close, d.low_limit, d.high_limit, d.volume,
                    COALESCE(t.price, d.prev_close) AS last
             FROM companies c
@@ -50,10 +51,15 @@ class MarketController extends Controller
                 'low_limit' => $r->low_limit === null ? null : (int) $r->low_limit,
                 'high_limit' => $r->high_limit === null ? null : (int) $r->high_limit,
                 'volume' => (int) ($r->volume ?? 0),
-            ];
+            ] + self::fundamentals($r, $last);
         }, $rows);
 
         return response()->json([
+            'index' => self::indexOf($companies, null),
+            'sectors' => array_map(
+                fn ($sector) => ['name' => $sector] + self::indexOf($companies, $sector),
+                array_values(array_unique(array_filter(array_column($companies, 'sector'))))
+            ),
             'market' => [
                 'open' => Ledger::setting('market_open'),
                 'close' => Ledger::setting('market_close'),
@@ -61,6 +67,58 @@ class MarketController extends Controller
             ],
             'companies' => $companies,
         ]);
+    }
+
+    /**
+     * Per-share figures derived from the company's issued shares, equity and
+     * income. Ratios are multiplied by 100 (1850 means 18.50).
+     */
+    private static function fundamentals(object $r, ?int $last): array
+    {
+        $issued = (int) $r->shares_outstanding;
+        $bookValue = intdiv((int) $r->equity, $issued);   // halalas per share
+        $eps = intdiv((int) $r->net_income, $issued);
+
+        return [
+            'issued_shares' => $issued,
+            'free_float' => $issued - (int) $r->founder_shares,
+            'par_value' => (int) $r->par_value,
+            'capital' => $issued * (int) $r->par_value,
+            'market_cap' => $last === null ? null : $issued * $last,
+            'book_value' => $bookValue,
+            'eps' => $eps,
+            'pe' => ($last !== null && $eps > 0) ? intdiv($last * 100, $eps) : null,
+            'pb' => ($last !== null && $bookValue > 0) ? intdiv($last * 100, $bookValue) : null,
+            'base_price' => (int) $r->ref_price,
+        ];
+    }
+
+    /**
+     * Free-float weighted index, base 10,000 at the listing prices:
+     * 10,000 x sum(float x last) / sum(float x listing price).
+     * $sector limits it to one sector.
+     *
+     * @return array{value:int,change_bps:int} value is multiplied by 100
+     */
+    private static function indexOf(array $companies, ?string $sector): array
+    {
+        $now = $prev = $base = 0;
+        foreach ($companies as $c) {
+            if ($c['status'] !== 'trading' || $c['last'] === null || ($sector !== null && $c['sector'] !== $sector)) {
+                continue;
+            }
+            $now += $c['free_float'] * $c['last'];
+            $prev += $c['free_float'] * ($c['prev_close'] ?? $c['last']);
+            $base += $c['free_float'] * $c['base_price'];
+        }
+        if ($base === 0) {
+            return ['value' => 1000000, 'change_bps' => 0];
+        }
+
+        return [
+            'value' => (int) round($now / $base * 1000000),
+            'change_bps' => $prev > 0 ? (int) round(($now - $prev) / $prev * 10000) : 0,
+        ];
     }
 
     public function depth(string $symbol): JsonResponse
@@ -164,7 +222,8 @@ class MarketController extends Controller
     public function holders(string $symbol): JsonResponse
     {
         $company = $this->company($symbol);
-        $total = (int) DB::table('positions')->where('company_id', $company->id)->sum('qty');
+        $total = (int) $company->shares_outstanding;
+        $founders = (int) $company->founder_shares;
         $rows = DB::select(<<<'SQL'
             SELECT CASE WHEN u.role = 'bot' THEN u.name ELSE u.alias END AS holder,
                    u.role = 'bot' AS is_fund, p.qty
@@ -174,13 +233,21 @@ class MarketController extends Controller
             LIMIT 10
             SQL, [$company->id]);
 
+        $holders = array_map(fn ($r) => [
+            'holder' => $r->holder, 'is_fund' => (bool) $r->is_fund, 'qty' => (int) $r->qty,
+            'share_bps' => intdiv((int) $r->qty * 10000, $total),
+        ], $rows);
+        if ($founders > 0) {
+            array_unshift($holders, ['holder' => 'المؤسسون (أسهم غير متداولة)', 'is_fund' => false,
+                'qty' => $founders, 'share_bps' => intdiv($founders * 10000, $total)]);
+        }
+
         return response()->json([
             'symbol' => $company->symbol,
-            'total_held' => $total,
-            'holders' => array_map(fn ($r) => [
-                'holder' => $r->holder, 'is_fund' => (bool) $r->is_fund, 'qty' => (int) $r->qty,
-                'share_bps' => $total > 0 ? intdiv((int) $r->qty * 10000, $total) : 0,
-            ], $rows),
+            'issued_shares' => $total,
+            'free_float' => $total - $founders,
+            'total_held' => (int) DB::table('positions')->where('company_id', $company->id)->sum('qty'),
+            'holders' => $holders,
         ]);
     }
 

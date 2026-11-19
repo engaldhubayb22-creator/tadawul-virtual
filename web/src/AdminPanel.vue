@@ -114,6 +114,8 @@ onBeforeUnmount(() => clearInterval(timer))
         <span>صفقات اليوم <b class="num">{{ data.stats.trades_today }}</b></span>
         <span :class="data.stats.ledger_sum === 0 ? 'up' : 'down'">
           مطابقة الدفتر <b>{{ data.stats.ledger_sum === 0 ? 'سليمة' : 'فرق ' + money(data.stats.ledger_sum) }}</b></span>
+        <span :class="data.stats.registry_mismatches === 0 ? 'up' : 'down'">
+          سجل الملكية <b>{{ data.stats.registry_mismatches === 0 ? 'مطابق للأسهم الحرة' : data.stats.registry_mismatches + ' شركة غير مطابقة' }}</b></span>
       </div>
     </section>
 

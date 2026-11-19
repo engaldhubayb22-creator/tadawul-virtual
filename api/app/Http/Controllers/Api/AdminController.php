@@ -69,6 +69,10 @@ class AdminController extends Controller
                 'trades_today' => DB::table('trades')->whereRaw('executed_at::date = now()::date')->count(),
                 // Double-entry check: must always be zero.
                 'ledger_sum' => (int) DB::table('ledger_accounts')->sum('balance'),
+                // Share registry check: companies whose positions do not add up to their free float.
+                'registry_mismatches' => (int) DB::selectOne(
+                    "SELECT count(*) AS n FROM companies c WHERE c.status = 'trading' AND c.shares_outstanding - c.founder_shares
+                     <> COALESCE((SELECT sum(qty) FROM positions p WHERE p.company_id = c.id), 0)")->n,
             ],
             'news' => DB::table('news')->orderByDesc('id')->limit(10)->get(),
         ]);
@@ -129,6 +133,23 @@ class AdminController extends Controller
             $row['updated_at'] = DB::raw('now()');
             DB::table('bot_configs')->updateOrInsert(['company_id' => $company->id], $row);
             $this->audit($request, 'bot.update', ['symbol' => $symbol] + $request->all());
+        });
+
+        return $this->overview();
+    }
+
+    /** Set a company's virtual fundamentals: equity, income and par value. */
+    public function fundamentals(Request $request, string $symbol): JsonResponse
+    {
+        $company = $this->company($symbol);
+        $data = $request->validate([
+            'equity' => ['sometimes', 'integer', 'min:0'],
+            'net_income' => ['sometimes', 'integer'],
+            'par_value' => ['sometimes', 'integer', 'min:1'],
+        ]);
+        DB::transaction(function () use ($company, $data, $request, $symbol) {
+            DB::table('companies')->where('id', $company->id)->update($data);
+            $this->audit($request, 'company.fundamentals', ['symbol' => $symbol] + $data);
         });
 
         return $this->overview();

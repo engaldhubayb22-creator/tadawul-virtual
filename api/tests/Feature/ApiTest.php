@@ -245,15 +245,64 @@ class ApiTest extends TestCase
             ->assertJsonPath('traders.1.alias', 'small_fish')
             ->assertJsonPath('traders.1.net_worth', 10000000);
 
-        // Top holders: the fund shows under its name, shares are of all held (9,000 of 10,000).
+        // Top holders: the fund shows under its name; shares are of all issued shares.
         $this->getJson('/api/v1/market/2222/holders')->assertOk()
             ->assertJsonPath('total_held', 10000)
             ->assertJsonPath('holders.0.holder', 'صندوق السيولة')
             ->assertJsonPath('holders.0.is_fund', true)
-            ->assertJsonPath('holders.0.share_bps', 9000)
+            ->assertJsonPath('holders.0.share_bps', 90)   // 9,000 of the 1,000,000 issued
             ->assertJsonPath('holders.1.holder', 'big_whale')
-            ->assertJsonPath('holders.1.share_bps', 1000);
+            ->assertJsonPath('holders.1.share_bps', 10);
         $this->getJson('/api/v1/market/9999/holders')->assertStatus(404);
         $this->assertNotNull($poor['token']);
+    }
+
+    public function test_fundamentals_and_free_float_index(): void
+    {
+        // 2222: 50M issued, 39M founders, equity 675M SAR, income 75M SAR, listed at 27.00.
+        DB::table('companies')->where('symbol', '2222')->update([
+            'shares_outstanding' => 50000000, 'founder_shares' => 39000000,
+            'equity' => 67500000000, 'net_income' => 7500000000,
+        ]);
+        $sector = DB::table('sectors')->insertGetId(['name' => 'البنوك']);
+        $bank = DB::table('companies')->insertGetId(['symbol' => '1120', 'name' => 'الراجحي', 'sector_id' => $sector,
+            'shares_outstanding' => 20000000, 'founder_shares' => 10000000, 'ref_price' => 10000]);
+        // The bank trades at 110.00 today after closing at 100.00; 2222 has not traded.
+        foreach ([[DB::table('companies')->where('symbol', '2222')->value('id'), 2700], [$bank, 10000]] as [$id, $prev]) {
+            DB::table('daily_stats')->insert(['company_id' => $id, 'trade_date' => '2026-11-20', 'prev_close' => $prev, 'low_limit' => 1, 'high_limit' => 99999900]);
+        }
+        $a = $this->registerUser('idx_a', '0500000021'); $b = $this->registerUser('idx_b', '0500000022');
+        $mk = fn ($u, $side) => DB::table('orders')->insertGetId(['user_id' => $u, 'company_id' => $bank, 'side' => $side, 'kind' => 'limit',
+            'price' => 11000, 'qty' => 1, 'filled_qty' => 1, 'status' => 'filled', 'idempotency_key' => $side]);
+        DB::table('trades')->insert(['company_id' => $bank, 'buy_order_id' => $mk($a['user']['id'], 'buy'), 'sell_order_id' => $mk($b['user']['id'], 'sell'),
+            'buy_user_id' => $a['user']['id'], 'sell_user_id' => $b['user']['id'], 'price' => 11000, 'qty' => 1, 'taker_side' => 'buy']);
+
+        $res = $this->getJson('/api/v1/market')->assertOk();
+        $c = collect($res->json('companies'))->keyBy('symbol');
+        // Book value 675M / 50M = 13.50, EPS 1.50, P/E 27.00 / 1.50 = 18.00, P/B 2.00.
+        $this->assertSame(50000000, $c['2222']['issued_shares']);
+        $this->assertSame(11000000, $c['2222']['free_float']);
+        $this->assertSame(1000, $c['2222']['par_value']);
+        $this->assertSame(50000000 * 1000, $c['2222']['capital']);
+        $this->assertSame(50000000 * 2700, $c['2222']['market_cap']);
+        $this->assertSame(1350, $c['2222']['book_value']);
+        $this->assertSame(150, $c['2222']['eps']);
+        $this->assertSame(1800, $c['2222']['pe']);
+        $this->assertSame(200, $c['2222']['pb']);
+        $this->assertNull($c['1120']['pe']); // no income entered
+
+        // Index: float x price now = 11M x 27.00 + 10M x 110.00 = 1,397M; at listing 1,297M.
+        // 10,000 x 1397 / 1297 = 10,771.01; against yesterday's closes it is +7.71%.
+        $this->assertSame(1077101, $res->json('index.value'));
+        $this->assertSame(771, $res->json('index.change_bps'));
+        // The bank sector alone is up exactly 10%.
+        $bankIdx = collect($res->json('sectors'))->firstWhere('name', 'البنوك');
+        $this->assertSame(1100000, $bankIdx['value']);
+        $this->assertSame(1000, $bankIdx['change_bps']);
+
+        // Holders: founders first, as a share of all issued shares (78%).
+        $this->getJson('/api/v1/market/2222/holders')->assertOk()
+            ->assertJsonPath('issued_shares', 50000000)->assertJsonPath('free_float', 11000000)
+            ->assertJsonPath('holders.0.qty', 39000000)->assertJsonPath('holders.0.share_bps', 7800);
     }
 }

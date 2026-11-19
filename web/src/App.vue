@@ -12,6 +12,23 @@ import {
 
 const rows = computed(() => state.symbols.map((s) => state.companies[s]))
 const current = computed(() => state.companies[state.selected] || null)
+
+// The index moves with every tick: free float x last price over free float x
+// listing price, base 10,000. Same formula as the API's first snapshot.
+const index = computed(() => {
+  let now = 0, prev = 0, base = 0
+  for (const c of rows.value) {
+    if (!c || c.status !== 'trading' || !c.free_float) continue
+    now += c.free_float * c.last; prev += c.free_float * (c.prev_close ?? c.last); base += c.free_float * c.base_price
+  }
+  return base ? { value: (now / base) * 10000, change: prev ? ((now - prev) / prev) * 100 : 0 } : null
+})
+const big = (h) => {
+  if (h == null) return '—'
+  const sar = h / 100
+  return sar >= 1e9 ? (sar / 1e9).toFixed(2) + ' مليار' : sar >= 1e6 ? (sar / 1e6).toFixed(2) + ' مليون' : money(h)
+}
+const ratio = (x) => (x == null ? '—' : (x / 100).toFixed(2))
 const tab = ref('orders')
 const forumSymbol = ref(false) // forum filter: false = all threads, true = only the selected company
 const view = ref('trade') // 'trade' or 'admin'
@@ -162,6 +179,8 @@ onMounted(async () => {
   <header class="top">
     <div class="brand">تداول الافتراضي <span class="note">{{ DEMO ? 'نسخة تجريبية داخل المتصفح: السوق محاكاة والبيانات تُمسح عند إعادة التحميل' : 'أسعار افتراضية لا تمثل السوق الحقيقي' }}</span></div>
     <div class="status">
+      <span v-if="index" class="idx">المؤشر العام <b class="num">{{ index.value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</b>
+        <span class="num" :class="index.change > 0 ? 'up' : index.change < 0 ? 'down' : ''">{{ (index.change > 0 ? '+' : '') + index.change.toFixed(2) }}%</span></span>
       <span class="pill" :class="marketOpen ? 'good' : 'bad'">
         {{ marketOpen ? 'السوق مفتوح' : 'السوق مغلق' }} · {{ state.market.open }}–{{ state.market.close }}
       </span>
@@ -212,6 +231,16 @@ onMounted(async () => {
         <span :key="current.flash" class="big num" :class="[current.flash ? 'flash-' + current.dir : '', current.change > 0 ? 'up' : current.change < 0 ? 'down' : '']">{{ money(current.last) }}</span>
         <span class="num" :class="current.change > 0 ? 'up' : current.change < 0 ? 'down' : ''">{{ money(current.change) }} ({{ pct(current.change_bps) }})</span>
         <span class="muted limits">الحدود <span class="num">{{ money(current.low_limit) }} – {{ money(current.high_limit) }}</span></span>
+      </div>
+      <div v-if="current?.issued_shares" class="facts">
+        <span>القيمة السوقية <b>{{ big(current.issued_shares * current.last) }}</b></span>
+        <span>الأسهم المصدرة <b class="num">{{ qty(current.issued_shares) }}</b></span>
+        <span>الأسهم الحرة <b class="num">{{ qty(current.free_float) }}</b></span>
+        <span>القيمة الاسمية <b class="num">{{ money(current.par_value) }}</b></span>
+        <span>القيمة الدفترية <b class="num">{{ money(current.book_value) }}</b></span>
+        <span>ربحية السهم <b class="num">{{ money(current.eps) }}</b></span>
+        <span>مكرر الأرباح <b class="num">{{ current.eps > 0 ? (current.last / current.eps).toFixed(2) : '—' }}</b></span>
+        <span>مضاعف القيمة الدفترية <b class="num">{{ current.book_value > 0 ? (current.last / current.book_value).toFixed(2) : '—' }}</b></span>
       </div>
       <ChartPanel @pick="(p) => pick(p)" />
     </section>
@@ -398,7 +427,7 @@ onMounted(async () => {
         </tbody>
       </table>
       <table v-else-if="tab === 'holders'">
-        <thead><tr><th>المالك في {{ current?.name }}</th><th>الكمية</th><th>النسبة من الأسهم المملوكة</th></tr></thead>
+        <thead><tr><th>المالك في {{ current?.name }}</th><th>الكمية</th><th>النسبة من الأسهم المصدرة</th></tr></thead>
         <tbody>
           <tr v-for="h in state.holders.holders" :key="h.holder">
             <td><b>{{ h.holder }}</b> <small v-if="h.is_fund" class="tag">صندوق</small></td>

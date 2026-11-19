@@ -116,7 +116,16 @@ CREATE TABLE companies (
     symbol             TEXT   NOT NULL UNIQUE,
     name               TEXT   NOT NULL,
     sector_id          INT    REFERENCES sectors (id),
+    -- Issued shares. Every one of them is accounted for: founder_shares are
+    -- held outside the market and never trade; the rest is the free float,
+    -- which must equal the sum of all positions in the company.
     shares_outstanding BIGINT NOT NULL CHECK (shares_outstanding > 0),
+    founder_shares     BIGINT NOT NULL DEFAULT 0 CHECK (founder_shares >= 0),
+    par_value          BIGINT NOT NULL DEFAULT 1000 CHECK (par_value > 0),   -- nominal value per share, 10.00
+    -- Virtual fundamentals, set by the admin: total shareholders' equity and
+    -- trailing twelve-month net income, in halalas.
+    equity             BIGINT NOT NULL DEFAULT 0,
+    net_income         BIGINT NOT NULL DEFAULT 0,
     tick_size          BIGINT NOT NULL DEFAULT 1 CHECK (tick_size > 0),
     -- Listing price: the reference for the first trading day's limits.
     ref_price          BIGINT NOT NULL CHECK (ref_price > 0),
@@ -124,7 +133,8 @@ CREATE TABLE companies (
     listed_at          DATE,
     status             TEXT   NOT NULL DEFAULT 'trading'
                        CHECK (status IN ('pending', 'trading', 'halted', 'delisted')),
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (founder_shares < shares_outstanding)
 );
 
 CREATE TABLE orders (

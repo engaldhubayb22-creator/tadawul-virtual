@@ -52,6 +52,7 @@ Route::prefix('v1')->group(function () {
             Route::put('settings', [AdminController::class, 'settings']);
             Route::put('bots/{symbol}', [AdminController::class, 'bot']);
             Route::put('companies/{symbol}/status', [AdminController::class, 'companyStatus']);
+            Route::put('companies/{symbol}/fundamentals', [AdminController::class, 'fundamentals']);
             Route::post('news', [AdminController::class, 'news']);
             Route::post('ipos', [IpoController::class, 'store']);
             Route::post('ipos/{id}/allocate', [IpoController::class, 'allocate']);

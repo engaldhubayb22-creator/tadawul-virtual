@@ -74,6 +74,9 @@ class IpoController extends Controller
             'tick_size' => ['required', 'integer', 'min:1'],
             'shares_offered' => ['required', 'integer', 'min:1'],
             'maker_shares' => ['required', 'integer', 'min:0'],
+            'founder_shares' => ['nullable', 'integer', 'min:0'],
+            'equity' => ['nullable', 'integer', 'min:0'],
+            'net_income' => ['nullable', 'integer'],
             'min_qty' => ['required', 'integer', 'min:1'],
             'max_qty' => ['required', 'integer', 'gte:min_qty'],
             'minutes' => ['required', 'integer', 'between:1,43200'],
@@ -90,7 +93,9 @@ class IpoController extends Controller
             }
             $companyId = DB::table('companies')->insertGetId([
                 'symbol' => $data['symbol'], 'name' => $data['name'], 'sector_id' => $sectorId,
-                'shares_outstanding' => $data['shares_offered'] + $data['maker_shares'],
+                'shares_outstanding' => $data['shares_offered'] + $data['maker_shares'] + ($data['founder_shares'] ?? 0),
+                'founder_shares' => $data['founder_shares'] ?? 0,
+                'equity' => $data['equity'] ?? 0, 'net_income' => $data['net_income'] ?? 0,
                 'tick_size' => $data['tick_size'], 'ref_price' => $data['price'], 'status' => 'pending',
             ]);
             $ipoId = DB::table('ipos')->insertGetId([

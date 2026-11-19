@@ -65,12 +65,19 @@ func main() {
 		}
 	}
 
-	for _, c := range companies {
+	// Virtual figures, not real company data. Each company has 50 million
+	// issued shares: 39 million held by founders and 11 million free float,
+	// which is exactly what the two bot accounts receive below. Equity is set
+	// for a price-to-book of about 1.8 to 2.6 and income for a P/E of 14 to 24.
+	const issued, float = int64(50_000_000), int64(11_000_000)
+	for i, c := range companies {
 		must(tx.Exec(`INSERT INTO sectors (name) VALUES ($1) ON CONFLICT DO NOTHING`, c.sector))
 		must(tx.Exec(`
-			INSERT INTO companies (symbol, name, sector_id, shares_outstanding, tick_size, ref_price)
-			SELECT $1, $2, s.id, 1000000000, $4, $5 FROM sectors s WHERE s.name = $3
-			ON CONFLICT (symbol) DO NOTHING`, c.symbol, c.name, c.sector, c.tick, c.price))
+			INSERT INTO companies (symbol, name, sector_id, shares_outstanding, founder_shares, tick_size, ref_price,
+			                       equity, net_income)
+			SELECT $1, $2, s.id, $6, $7, $4, $5, $8, $9 FROM sectors s WHERE s.name = $3
+			ON CONFLICT (symbol) DO NOTHING`, c.symbol, c.name, c.sector, c.tick, c.price,
+			issued, issued-float, issued*c.price*100/int64(180+20*(i%5)), issued*c.price/int64(14+2*(i%6))))
 	}
 
 	var treasury int64
