@@ -109,6 +109,15 @@ class MarketController extends Controller
         return response()->json(['symbol' => $company->symbol, 'interval' => '1m', 'candles' => $rows]);
     }
 
+    public function news(): JsonResponse
+    {
+        $rows = DB::table('news as n')->leftJoin('companies as c', 'c.id', '=', 'n.company_id')
+            ->orderByDesc('n.id')->limit(30)
+            ->get(['n.id', 'c.symbol', 'c.name', 'n.title', 'n.body', 'n.created_at']);
+
+        return response()->json(['news' => $rows]);
+    }
+
     private function company(string $symbol): object
     {
         $company = DB::table('companies')->where('symbol', $symbol)->first();

@@ -73,6 +73,7 @@ type Engine struct {
 	enforced  bool
 	limitBps  int64
 	day       string
+	refreshed time.Time
 	DepthSize int
 
 	testHook func(Command) error // tests only: inject a failure after a command
@@ -110,6 +111,7 @@ func (e *Engine) Load(ctx context.Context) error {
 		return err
 	}
 	e.day = ""
+	e.refreshed = e.Now()
 	return e.ensureDay(ctx)
 }
 
@@ -160,6 +162,38 @@ func parseHM(s string) (int, error) {
 		return 0, fmt.Errorf("bad time %q, want HH:MM", s)
 	}
 	return hh*60 + mm, nil
+}
+
+// refreshEvery is how quickly a change made in the admin panel (market
+// hours, a trading halt) reaches the engine.
+const refreshEvery = 5 * time.Second
+
+// refresh re-reads the settings and each company's status, at most once
+// every refreshEvery.
+func (e *Engine) refresh(ctx context.Context) error {
+	if e.Now().Sub(e.refreshed) < refreshEvery {
+		return nil
+	}
+	if err := e.loadSettings(ctx); err != nil {
+		return err
+	}
+	rows, err := e.db.QueryContext(ctx, `SELECT id, status FROM companies`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var status string
+		if err := rows.Scan(&id, &status); err != nil {
+			return err
+		}
+		if c := e.byID[id]; c != nil {
+			c.status = status
+		}
+	}
+	e.refreshed = e.Now()
+	return rows.Err()
 }
 
 // MarketOpen reports whether trading is allowed right now.
@@ -360,6 +394,9 @@ func (e *Engine) Process(ctx context.Context, cmd Command) ([]Event, error) {
 // affected books were rebuilt from the database, and the commands can be
 // retried. Business rejections come back as an "order" event with a reason.
 func (e *Engine) ProcessBatch(ctx context.Context, cmds []Command) ([]Event, error) {
+	if err := e.refresh(ctx); err != nil {
+		return nil, err
+	}
 	if err := e.ensureDay(ctx); err != nil {
 		return nil, err
 	}

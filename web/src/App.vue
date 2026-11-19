@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import AdminPanel from './AdminPanel.vue'
 import AuthModal from './AuthModal.vue'
 import ChartPanel from './ChartPanel.vue'
 import {
@@ -9,6 +10,9 @@ import {
 const rows = computed(() => state.symbols.map((s) => state.companies[s]))
 const current = computed(() => state.companies[state.selected] || null)
 const tab = ref('orders')
+const view = ref('trade') // 'trade' or 'admin'
+const isAdmin = computed(() => state.user?.role === 'admin')
+watch(isAdmin, (a) => { if (!a) view.value = 'trade' })
 
 // ---- market clock (Riyadh time)
 const now = ref(Date.now())
@@ -80,6 +84,8 @@ onMounted(async () => {
       <span class="pill" :class="state.connected ? 'good' : 'bad'">{{ state.connected ? 'بث مباشر' : 'يعيد الاتصال…' }}</span>
       <template v-if="state.user">
         <span class="cash">النقد <b class="num">{{ money(state.balances.cash) }}</b></span>
+        <button v-if="isAdmin" class="small" :class="{ primary: view === 'admin' }" @click="view = view === 'admin' ? 'trade' : 'admin'">
+          {{ view === 'admin' ? 'شاشة التداول' : 'لوحة الإدارة' }}</button>
         <span class="alias">{{ state.user.alias }}</span>
         <button class="ghost" @click="logout()">خروج</button>
       </template>
@@ -87,7 +93,8 @@ onMounted(async () => {
     </div>
   </header>
 
-  <main class="grid">
+  <AdminPanel v-if="view === 'admin' && isAdmin" />
+  <main v-else class="grid">
     <!-- watchlist -->
     <section class="panel list">
       <table>

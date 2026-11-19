@@ -1,8 +1,10 @@
 <?php
 
+use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\MarketController;
 use App\Http\Controllers\Api\OrderController;
+use App\Http\Middleware\AdminOnly;
 use Illuminate\Support\Facades\Route;
 
 // The web app and the mobile app both use these routes.
@@ -13,6 +15,7 @@ Route::prefix('v1')->group(function () {
     });
 
     Route::get('market', [MarketController::class, 'index']);
+    Route::get('news', [MarketController::class, 'news']);
     Route::get('market/{symbol}/depth', [MarketController::class, 'depth']);
     Route::get('market/{symbol}/trades', [MarketController::class, 'trades']);
     Route::get('market/{symbol}/candles', [MarketController::class, 'candles']);
@@ -24,5 +27,13 @@ Route::prefix('v1')->group(function () {
         Route::get('orders', [OrderController::class, 'index']);
         Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:orders');
         Route::delete('orders/{id}', [OrderController::class, 'destroy'])->middleware('throttle:orders');
+
+        Route::prefix('admin')->middleware(AdminOnly::class)->group(function () {
+            Route::get('overview', [AdminController::class, 'overview']);
+            Route::put('settings', [AdminController::class, 'settings']);
+            Route::put('bots/{symbol}', [AdminController::class, 'bot']);
+            Route::put('companies/{symbol}/status', [AdminController::class, 'companyStatus']);
+            Route::post('news', [AdminController::class, 'news']);
+        });
     });
 });

@@ -91,7 +91,7 @@ CREATE INDEX ledger_entries_debit  ON ledger_entries (debit_account_id, id);
 CREATE INDEX ledger_entries_credit ON ledger_entries (credit_account_id, id);
 CREATE INDEX ledger_entries_ref    ON ledger_entries (ref_type, ref_id);
 
-CREATE FUNCTION ledger_entries_immutable() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION ledger_entries_immutable() RETURNS trigger AS $$
 BEGIN
     RAISE EXCEPTION 'ledger_entries is append-only';
 END;
@@ -211,3 +211,48 @@ CREATE TABLE daily_stats (
     CHECK (low_limit <= prev_close AND prev_close <= high_limit)
 );
 
+
+-- ---------------------------------------------------------------------------
+-- Market maker and news
+-- ---------------------------------------------------------------------------
+
+-- One row per company the admin has tuned; companies without a row use the
+-- column defaults. The bot re-reads this table on every cycle.
+CREATE TABLE bot_configs (
+    company_id   BIGINT  PRIMARY KEY REFERENCES companies (id),
+    enabled      BOOLEAN NOT NULL DEFAULT true,
+    spread_bps   INT     NOT NULL DEFAULT 10 CHECK (spread_bps BETWEEN 1 AND 500),  -- gap between quote levels
+    levels       INT     NOT NULL DEFAULT 5  CHECK (levels BETWEEN 1 AND 10),
+    qty_min      BIGINT  NOT NULL DEFAULT 100,
+    qty_max      BIGINT  NOT NULL DEFAULT 2000,
+    noise_pct    INT     NOT NULL DEFAULT 70 CHECK (noise_pct BETWEEN 0 AND 100),   -- chance per cycle of a random trade
+    -- Scenario: steer the price toward target_price until target_until.
+    target_price BIGINT  CHECK (target_price > 0),
+    target_until TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (qty_min > 0 AND qty_min <= qty_max)
+);
+
+CREATE TABLE news (
+    id         BIGSERIAL PRIMARY KEY,
+    company_id BIGINT REFERENCES companies (id),         -- NULL: market-wide
+    title      TEXT        NOT NULL,
+    body       TEXT        NOT NULL DEFAULT '',
+    impact_bps INT         NOT NULL DEFAULT 0,           -- the price move the bots were asked to make
+    created_by BIGINT REFERENCES users (id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX news_recent ON news (created_at DESC);
+
+INSERT INTO settings (key, value) VALUES ('bots_enabled', 'true');
+
+-- Who changed what in the admin panel.
+CREATE TABLE audit_logs (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT REFERENCES users (id),
+    action     TEXT        NOT NULL,
+    details    JSONB       NOT NULL DEFAULT '{}',
+    ip         TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -99,6 +99,26 @@ td small { display: block; color: var(--muted); font-size: 11px; }
 .modal .tabs { padding: 0 0 8px; }
 .error { color: var(--down); margin: 0; } .hint { color: var(--muted); font-size: 12px; margin: 0; }
 
+.admin { flex: 1; min-height: 0; padding: 8px; display: grid; gap: 8px; align-content: start; overflow-y: auto; }
+.admin .panel { overflow: visible; }
+.pad { padding: 12px 14px; gap: 12px; }
+.admin h3 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 12px; }
+.row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.row label { min-width: 120px; } .row .grow { flex: 1; min-width: 220px; }
+.row .check { display: flex; align-items: center; gap: 6px; padding-bottom: 8px; }
+.row .check input { width: auto; }
+select { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; }
+.stats { display: flex; gap: 22px; flex-wrap: wrap; color: var(--muted); }
+.stats b { color: var(--text); margin-inline-start: 4px; } .stats .up b { color: var(--up); } .stats .down b { color: var(--down); }
+.scroll { overflow-x: auto; }
+.admin td { padding: 5px 8px; } .admin td input { padding: 4px 6px; }
+input.xs { width: 64px; } input.sm { width: 96px; } .pair input.sm[placeholder] { width: 140px; }
+.pair { display: flex; gap: 6px; align-items: center; }
+button.on { color: var(--up); border-color: var(--up); }
+button.danger { color: #fff; background: var(--down); border-color: var(--down); }
+.newslist { margin: 0; padding: 0; list-style: none; color: var(--muted); display: grid; gap: 4px; }
+.newslist .num { margin-inline-start: 8px; }
+
 /* Below desktop width the page scrolls as a whole instead of each panel
    fitting the window, so nothing is squeezed to zero height. */
 @media (max-width: 1100px) {

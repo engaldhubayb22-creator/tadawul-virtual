@@ -328,6 +328,7 @@ func TestDuplicateKeyIsAppliedOnce(t *testing.T) {
 func TestMarketHours(t *testing.T) {
 	f := setup(t)
 	f.e.enforced = true
+	f.exec(`UPDATE settings SET value = 'true' WHERE key = 'market_hours_enforced'`)
 	riyadh := f.e.tz
 	today := time.Now().In(riyadh)
 	at := func(h, m int) func() time.Time {
@@ -477,4 +478,27 @@ func TestFailedBatchChangesNothing(t *testing.T) {
 		t.Fatalf("retry: %+v", got)
 	}
 	f.checkLedger()
+}
+
+func TestAdminChangesReachTheEngine(t *testing.T) {
+	f := setup(t)
+	clock := time.Now()
+	f.e.Now = func() time.Time { return clock }
+	order := Command{UserID: f.buyer, Side: "buy", Kind: "limit", Price: 2600, Qty: 1}
+
+	f.exec(`UPDATE companies SET status = 'halted' WHERE symbol = '2222'`)
+	// Within the refresh window the engine still has the old status.
+	if got := orderEvent(t, f.send(order), f.buyer); got.Status != "open" {
+		t.Fatalf("before refresh: %+v", got)
+	}
+	clock = clock.Add(refreshEvery + time.Second)
+	if got := orderEvent(t, f.send(order), f.buyer); got.Reason != "halted" {
+		t.Fatalf("halt not applied: %+v", got)
+	}
+
+	f.exec(`UPDATE companies SET status = 'trading' WHERE symbol = '2222'`)
+	clock = clock.Add(refreshEvery + time.Second)
+	if got := orderEvent(t, f.send(order), f.buyer); got.Status != "open" {
+		t.Fatalf("resume not applied: %+v", got)
+	}
 }

@@ -1,11 +1,12 @@
-// Command bot is the first, simple market maker. It runs two accounts:
+// Command bot runs the market maker. It uses two accounts:
 //
-//	mm-bot     keeps five bid and five ask levels around a drifting mid price
-//	noise-bot  sends small random market orders that trade against those quotes
+//	mm-bot     keeps a ladder of bids and asks around a moving mid price
+//	noise-bot  sends small random market orders that trade against the ladder
 //
-// Both send ordinary commands through the same queue as real users. This
-// version requotes every symbol on every cycle, which is fine for a handful
-// of symbols; the per-symbol scenarios from the admin panel come later.
+// Both send ordinary commands through the same queue as real users. Every
+// cycle the bot re-reads its settings from the database, so changes made in
+// the admin panel (pause, spread, sizes, a price scenario) apply within one
+// cycle. The decisions themselves live in package maker.
 package main
 
 import (
@@ -24,14 +25,16 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/engaldhubayb22-creator/tadawul-virtual/engine/maker"
 	"github.com/engaldhubayb22-creator/tadawul-virtual/engine/service"
 )
 
 type sym struct {
-	id              int64
-	symbol          string
-	tick, low, high int64
-	mid             int64
+	id        int64
+	symbol    string
+	market    maker.Market // Mid here is the last trade price or previous close
+	cfg       maker.Config
+	inventory int64
 }
 
 func env(key, def string) string {
@@ -84,8 +87,31 @@ func main() {
 		}
 	}
 
-	mids := map[int64]int64{}
+	mids := map[int64]int64{}     // the maker's own mid per company
+	base := map[int64]int64{}     // inventory when the bot first saw the company
+	quoting := map[int64]bool{}   // companies with a live ladder
 	cancelled := map[int64]bool{} // cancels already sent, so a slow engine is not flooded
+
+	// pull cancels the maker's resting orders for one company.
+	pull := func(companyID int64) {
+		rows, err := db.QueryContext(ctx, `
+			SELECT id FROM orders
+			WHERE user_id = $1 AND company_id = $2 AND status IN ('open', 'partial')`, mm, companyID)
+		if err != nil {
+			log.Printf("open orders: %v", err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			if rows.Scan(&id) == nil && !cancelled[id] {
+				cancelled[id] = true
+				send(service.Command{Type: "cancel", UserID: mm, OrderID: id})
+			}
+		}
+	}
+
+	skipped := 0
 	ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
 	defer ticker.Stop()
 	log.Printf("bot running, cycle every %d ms", interval)
@@ -99,91 +125,123 @@ func main() {
 		if len(cancelled) > 100000 {
 			cancelled = map[int64]bool{}
 		}
-		syms, err := loadSymbols(ctx, db)
+		// Back-pressure: if the engine has not caught up with what was already
+		// sent, sending more only builds a queue of stale quotes.
+		if lag := queueLag(ctx, rdb); lag > maxLag {
+			if skipped++; skipped%20 == 1 {
+				log.Printf("engine is %d commands behind, waiting", lag)
+			}
+			continue
+		}
+		on, syms, err := load(ctx, db, mm)
 		if err != nil {
-			log.Printf("load symbols: %v", err)
+			log.Printf("load: %v", err)
 			continue
 		}
 		for _, s := range syms {
-			mid, ok := mids[s.id]
-			if !ok {
-				mid = s.mid
+			if _, ok := base[s.id]; !ok {
+				base[s.id] = s.inventory
 			}
-			step := s.tick
-			if p := mid / 1000 / s.tick * s.tick; p > step {
-				step = p // about 0.1% of the price, on the tick grid
-			}
-			// Random walk, kept away from the daily limits so quotes stay valid.
-			mid += int64(rng.Intn(5)-2) * step
-			if lo := s.low + 6*step; mid < lo {
-				mid = lo
-			}
-			if hi := s.high - 6*step; mid > hi {
-				mid = hi
-			}
-			mid = mid / s.tick * s.tick
-			if old, seen := mids[s.id]; seen && old == mid {
-				continue // price did not move: keep the current quotes
-			}
-			mids[s.id] = mid
-
-			// Pull the old quotes, then post fresh ones around the new mid.
-			rows, err := db.QueryContext(ctx, `
-				SELECT id FROM orders
-				WHERE user_id = $1 AND company_id = $2 AND status IN ('open', 'partial')`, mm, s.id)
-			if err != nil {
-				log.Printf("open orders: %v", err)
+			if !on || !s.cfg.Enabled {
+				// Paused globally or for this company: keep pulling on every
+				// cycle, because orders sent just before the pause may still
+				// be on their way into the book.
+				pull(s.id)
+				quoting[s.id] = false
+				delete(mids, s.id)
 				continue
 			}
-			for rows.Next() {
-				var id int64
-				if rows.Scan(&id) == nil && !cancelled[id] {
-					cancelled[id] = true
-					send(service.Command{Type: "cancel", UserID: mm, OrderID: id})
+			m := s.market
+			m.Inventory, m.BaseInventory = s.inventory, base[s.id]
+			old, seen := mids[s.id]
+			if seen {
+				m.Mid = old
+			}
+			mid := maker.NextMid(m, s.cfg, rng)
+			mids[s.id] = mid
+
+			if !seen || mid != old || !quoting[s.id] {
+				pull(s.id)
+				bids, asks := maker.Quotes(m, mid, s.cfg, rng)
+				for _, q := range bids {
+					send(service.Command{Type: "new", UserID: mm, Symbol: s.symbol, Side: "buy", Kind: "limit", Price: q.Price, Qty: q.Qty})
 				}
+				for _, q := range asks {
+					send(service.Command{Type: "new", UserID: mm, Symbol: s.symbol, Side: "sell", Kind: "limit", Price: q.Price, Qty: q.Qty})
+				}
+				quoting[s.id] = true
 			}
-			rows.Close()
-			for k := int64(1); k <= 5; k++ {
-				send(service.Command{Type: "new", UserID: mm, Symbol: s.symbol, Side: "buy", Kind: "limit",
-					Price: mid - k*step, Qty: int64(100 + rng.Intn(1900))})
-				send(service.Command{Type: "new", UserID: mm, Symbol: s.symbol, Side: "sell", Kind: "limit",
-					Price: mid + k*step, Qty: int64(100 + rng.Intn(1900))})
-			}
-			if rng.Intn(10) < 7 {
+			if rng.Intn(100) < s.cfg.NoisePct {
 				side := "buy"
 				if rng.Intn(2) == 0 {
 					side = "sell"
 				}
 				send(service.Command{Type: "new", UserID: noise, Symbol: s.symbol, Side: side, Kind: "market",
-					Qty: int64(10 + rng.Intn(490))})
+					Qty: 10 + rng.Int63n(s.cfg.QtyMin+1)})
 			}
 		}
 	}
 }
 
-// loadSymbols reads the tradable companies with today's limits. The starting
-// mid is the last trade price, or the previous close before any trade.
-func loadSymbols(ctx context.Context, db *sql.DB) ([]sym, error) {
+// maxLag is how many unprocessed commands the bot tolerates before it waits.
+const maxLag = 300
+
+// queueLag returns how many commands the engine has not read yet.
+func queueLag(ctx context.Context, rdb *redis.Client) int64 {
+	groups, err := rdb.XInfoGroups(ctx, "orders:in").Result()
+	if err != nil {
+		return 0
+	}
+	for _, g := range groups {
+		if g.Name == "engine" {
+			return g.Lag + g.Pending
+		}
+	}
+	return 0
+}
+
+// load reads the global switch and, for every tradable company, today's
+// limits, the reference price, the maker's inventory and its settings.
+func load(ctx context.Context, db *sql.DB, mm int64) (bool, []sym, error) {
+	on := true
+	var raw []byte
+	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'bots_enabled'`).Scan(&raw)
+	if err == nil {
+		json.Unmarshal(raw, &on)
+	} else if err != sql.ErrNoRows {
+		return false, nil, err
+	}
+
+	d := maker.DefaultConfig()
 	rows, err := db.QueryContext(ctx, `
 		SELECT c.id, c.symbol, c.tick_size, d.low_limit, d.high_limit,
 		       COALESCE((SELECT t.price FROM trades t WHERE t.company_id = c.id ORDER BY t.id DESC LIMIT 1),
-		                d.prev_close)
+		                d.prev_close),
+		       COALESCE(p.qty, 0),
+		       COALESCE(b.enabled, $2), COALESCE(b.spread_bps, $3), COALESCE(b.levels, $4),
+		       COALESCE(b.qty_min, $5), COALESCE(b.qty_max, $6), COALESCE(b.noise_pct, $7),
+		       CASE WHEN b.target_until > now() THEN COALESCE(b.target_price, 0) ELSE 0 END
 		FROM companies c
 		JOIN daily_stats d ON d.company_id = c.id
 		 AND d.trade_date = (SELECT max(trade_date) FROM daily_stats)
+		LEFT JOIN positions p ON p.company_id = c.id AND p.user_id = $1
+		LEFT JOIN bot_configs b ON b.company_id = c.id
 		WHERE c.status = 'trading'
-		ORDER BY c.symbol`)
+		ORDER BY c.symbol`,
+		mm, d.Enabled, d.SpreadBps, d.Levels, d.QtyMin, d.QtyMax, d.NoisePct)
 	if err != nil {
-		return nil, err
+		return false, nil, err
 	}
 	defer rows.Close()
 	var out []sym
 	for rows.Next() {
 		var s sym
-		if err := rows.Scan(&s.id, &s.symbol, &s.tick, &s.low, &s.high, &s.mid); err != nil {
-			return nil, err
+		if err := rows.Scan(&s.id, &s.symbol, &s.market.Tick, &s.market.Low, &s.market.High, &s.market.Mid,
+			&s.inventory, &s.cfg.Enabled, &s.cfg.SpreadBps, &s.cfg.Levels, &s.cfg.QtyMin, &s.cfg.QtyMax,
+			&s.cfg.NoisePct, &s.cfg.Target); err != nil {
+			return false, nil, err
 		}
 		out = append(out, s)
 	}
-	return out, rows.Err()
+	return on, out, rows.Err()
 }
