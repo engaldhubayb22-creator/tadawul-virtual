@@ -33,6 +33,7 @@ function apply(d) {
   data.value = d
   if (!Object.keys(settings).length) {
     Object.assign(settings, d.settings, { starting_sar: d.settings.starting_balance_halalas / 100 })
+    settings.market_days = [...d.settings.market_days]
   }
   for (const c of d.companies) {
     edits[c.symbol] ??= { spread_bps: c.spread_bps, levels: c.levels, qty_min: c.qty_min, qty_max: c.qty_max,
@@ -55,7 +56,12 @@ const saveSettings = () => call('PUT', '/settings', {
   starting_balance_halalas: Math.round(Number(settings.starting_sar) * 100),
   market_open: settings.market_open, market_close: settings.market_close,
   market_hours_enforced: settings.market_hours_enforced,
+  market_days: settings.market_days, commission_bps: Number(settings.commission_bps),
+  financing_enabled: settings.financing_enabled, financing_fee_bps: settings.financing_fee_bps,
+  financing_days: settings.financing_days, financing_max_ratio_bps: settings.financing_max_ratio_bps,
+  margin_call_bps: settings.margin_call_bps, liquidation_bps: settings.liquidation_bps,
 }, 'حُفظت الإعدادات')
+const DAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت']
 const toggleBots = () => call('PUT', '/settings', { bots_enabled: !data.value.settings.bots_enabled },
   data.value.settings.bots_enabled ? 'أُوقفت كل البوتات' : 'شُغّلت البوتات')
 const saveBot = (c) => {
@@ -87,6 +93,19 @@ onBeforeUnmount(() => clearInterval(timer))
         <label>الإغلاق<input v-model="settings.market_close" type="time" dir="ltr" /></label>
         <label class="check"><input v-model="settings.market_hours_enforced" type="checkbox" /> تطبيق أوقات السوق</label>
         <label>الرصيد الابتدائي (ريال)<input v-model="settings.starting_sar" type="number" min="0" dir="ltr" /></label>
+        <label>العمولة (نقطة أساس)<input v-model="settings.commission_bps" type="number" min="0" max="100" step="0.1" dir="ltr" /></label>
+      </div>
+      <div class="row">
+        <span class="muted">أيام التداول</span>
+        <label v-for="(d, i) in DAYS" :key="i" class="check"><input v-model="settings.market_days" type="checkbox" :value="i" /> {{ d }}</label>
+      </div>
+      <div class="row">
+        <label class="check"><input v-model="settings.financing_enabled" type="checkbox" /> التمويل مفعّل</label>
+        <label>رسم التمويل (نقطة أساس)<input v-model.number="settings.financing_fee_bps" type="number" min="0" dir="ltr" /></label>
+        <label>مدة التمويل (يوم)<input v-model.number="settings.financing_days" type="number" min="1" dir="ltr" /></label>
+        <label>حد التمويل من الحقوق (نقطة أساس)<input v-model.number="settings.financing_max_ratio_bps" type="number" min="0" dir="ltr" /></label>
+        <label>تنبيه الهامش (نقطة أساس)<input v-model.number="settings.margin_call_bps" type="number" min="1" dir="ltr" /></label>
+        <label>التسييل (نقطة أساس)<input v-model.number="settings.liquidation_bps" type="number" min="1" dir="ltr" /></label>
         <button class="primary" @click="saveSettings">حفظ</button>
       </div>
       <div class="stats">

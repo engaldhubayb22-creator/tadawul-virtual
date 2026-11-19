@@ -12,12 +12,15 @@ const SEED = [
   ['7010', 'اس تي سي', 'الاتصالات', 4200, 5], ['2280', 'المراعي', 'إنتاج الأغذية', 5500, 5],
   ['4190', 'جرير', 'التجزئة', 1300, 1], ['4030', 'البحري', 'النقل', 2500, 1],
 ]
+import { tickFor } from './ticks'
+
 const START_CASH = 10000000
 const rnd = (a, b) => a + Math.floor(Math.random() * (b - a + 1))
 const grid = (p, tick) => Math.max(tick, Math.round(p / tick) * tick)
 
 const co = {} // by symbol
-for (const [symbol, name, sector, price, tick] of SEED) {
+for (const [symbol, name, sector, price] of SEED) {
+  const tick = tickFor(price * 1.1) // one step for the whole day's range keeps the demo book on the grid
   const step = Math.max(tick, grid(price / 1000, tick))
   const c = { symbol, name, sector, tick, step, prev: price, last: price, mid: price, volume: 0,
     low: grid(price * 0.9, tick), high: grid(price * 1.1, tick), trades: [], candles: [], drift: 0 }
@@ -80,7 +83,7 @@ function placeOrder(b) {
   const ask = c.mid + c.step, bid = c.mid - c.step
   const free = (me.positions[o.symbol]?.qty ?? 0) - (me.positions[o.symbol]?.reserved ?? 0)
   if (o.kind === 'limit') {
-    if (o.price % c.tick) return reject('bad_tick')
+    if (o.price % tickFor(o.price)) return reject('bad_tick')
     if (o.price < c.low || o.price > c.high) return reject('outside_daily_limits')
   }
   if (o.side === 'sell' && free < o.qty) return reject('insufficient_shares')

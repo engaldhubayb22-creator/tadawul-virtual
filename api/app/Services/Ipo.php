@@ -115,7 +115,8 @@ class Ipo
             self::addShares((int) $maker, (int) $ipo->company_id, $makerQty, $makerQty * $price);
         }
 
-        DB::table('companies')->where('id', $ipo->company_id)->update(['status' => 'trading']);
+        // listed_at starts the three trading days of wider price limits.
+        DB::table('companies')->where('id', $ipo->company_id)->update(['status' => 'trading', 'listed_at' => DB::raw('current_date')]);
         DB::table('ipos')->where('id', $ipo->id)->update(['status' => 'listed']);
 
         return ['subscribers' => count($alloc), 'requested' => array_sum($requests), 'sold' => $sold, 'to_maker' => $maker ? $makerQty : 0];

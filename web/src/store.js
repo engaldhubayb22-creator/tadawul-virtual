@@ -55,6 +55,9 @@ const REASONS = {
   no_reference_price: 'لا يوجد سعر مرجعي لأمر السوق',
   unknown_order: 'الأمر غير موجود',
   not_open: 'الأمر ليس مفتوحًا',
+  no_liquidity: 'لا توجد أوامر مقابلة في السوق الآن',
+  fok_not_filled: 'الكمية كاملة غير متاحة، فلم يُنفَّذ شيء',
+  unknown_user: 'الحساب غير مفعّل',
 }
 const STATUS = {
   open: 'دخل الأمر السوق', partial: 'نُفّذ جزء من الأمر', filled: 'نُفّذ الأمر كاملًا',

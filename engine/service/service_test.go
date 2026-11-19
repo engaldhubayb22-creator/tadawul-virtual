@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -54,6 +55,7 @@ func setup(t *testing.T) *fixture {
 	db := testDB(t)
 	f := &fixture{t: t, db: db}
 	f.exec(`UPDATE settings SET value = 'false' WHERE key = 'market_hours_enforced'`)
+	f.exec(`UPDATE settings SET value = '0' WHERE key = 'commission_bps'`) // most tests check exact cash
 	f.exec(`INSERT INTO companies (symbol, name, shares_outstanding, tick_size, ref_price)
 	        VALUES ('2222', 'Test Co', 1000000, 1, 2700)`)
 	f.buyer = f.user("buyer")
@@ -263,17 +265,96 @@ func TestRestingBuyReservesAndCancelRefunds(t *testing.T) {
 	f.checkLedger()
 }
 
-func TestMarketBuyReservesAtHighLimitAndRefunds(t *testing.T) {
+func TestMarketBuyHoldsTheCapThenRestsAtLastPrice(t *testing.T) {
 	f := setup(t)
 	f.send(Command{UserID: f.seller, Side: "sell", Kind: "limit", Price: 2710, Qty: 10})
+	// Best offer 27.10, step 0.02: the order may pay up to 27.20 and holds 25 x 27.20 = 680.00.
 	ev := f.send(Command{UserID: f.buyer, Side: "buy", Kind: "market", Qty: 25})
 	got := orderEvent(t, ev, f.buyer)
-	// Only 10 shares were on offer: 10 fill, 15 are cancelled.
-	if got.Status != "cancelled" || got.FilledQty != 10 {
+	// Only 10 were on offer: 10 fill at 27.10; the other 15 rest as a limit order at 27.10.
+	if got.Status != "partial" || got.FilledQty != 10 || got.Price != 2710 {
 		t.Fatalf("market order: %+v", got)
 	}
-	if f.balance(f.buyer, "cash") != startCash-27100 || f.balance(f.buyer, "reserved") != 0 {
+	if f.balance(f.buyer, "reserved") != 15*2710 || f.balance(f.buyer, "cash") != startCash-27100-15*2710 {
 		t.Fatalf("cash=%d reserved=%d", f.balance(f.buyer, "cash"), f.balance(f.buyer, "reserved"))
+	}
+	if p := f.int(`SELECT price FROM orders WHERE id = $1`, got.OrderID); p != 2710 {
+		t.Fatalf("resting price = %d", p)
+	}
+	f.send(Command{Type: "cancel", UserID: f.buyer, OrderID: got.OrderID})
+	if f.balance(f.buyer, "cash") != startCash-27100 || f.balance(f.buyer, "reserved") != 0 {
+		t.Fatalf("after cancel: cash=%d reserved=%d", f.balance(f.buyer, "cash"), f.balance(f.buyer, "reserved"))
+	}
+	f.checkLedger()
+}
+
+// The example from the requirements, with the 15.5 bps commission on.
+func TestLimitBuyAtBetterPricesWithCommission(t *testing.T) {
+	f := setup(t)
+	f.exec(`INSERT INTO companies (symbol, name, shares_outstanding, ref_price) VALUES ('1150', 'Alinma', 1000000, 2800)`)
+	f.exec(`INSERT INTO positions (user_id, company_id, qty, cost_total) VALUES ($1, 2, 2000, 5600000)`, f.seller)
+	f.e = f.newEngine()
+	f.e.feeTenths = 155
+	for _, o := range [][2]int64{{3000, 200}, {3010, 300}, {3060, 400}, {3062, 500}} {
+		f.send(Command{UserID: f.seller, Symbol: "1150", Side: "sell", Kind: "limit", Price: o[0], Qty: o[1]})
+	}
+	ev := f.send(Command{UserID: f.buyer, Symbol: "1150", Side: "buy", Kind: "limit", Price: 3060, Qty: 1000})
+	got := orderEvent(t, ev, f.buyer)
+	if got.Status != "partial" || got.FilledQty != 900 {
+		t.Fatalf("order: %+v", got)
+	}
+	// 200 x 30.00 + 300 x 30.10 + 400 x 30.60 = 27,270.00; commission 9.30 + 13.99 + 18.97 = 42.26.
+	const value, fees = 2727000, 930 + 1399 + 1897
+	// Still held for the 100 left at 30.60: 3,060.00 plus 4.74 commission.
+	const held = 306000 + 474
+	if f.balance(f.buyer, "reserved") != held || f.balance(f.buyer, "cash") != startCash-value-fees-held {
+		t.Fatalf("buyer cash=%d reserved=%d", f.balance(f.buyer, "cash"), f.balance(f.buyer, "reserved"))
+	}
+	if f.balance(f.seller, "cash") != value-fees {
+		t.Fatalf("seller cash = %d", f.balance(f.seller, "cash"))
+	}
+	if got := f.int(`SELECT balance FROM ledger_accounts WHERE kind = 'sys_commission'`); got != 2*fees {
+		t.Fatalf("commission account = %d", got)
+	}
+	var qty, cost int64
+	if err := f.db.QueryRow(`SELECT qty, cost_total FROM positions WHERE user_id = $1 AND company_id = 2`,
+		f.buyer).Scan(&qty, &cost); err != nil {
+		t.Fatal(err)
+	}
+	if qty != 900 || cost/qty != 3030 {
+		t.Fatalf("position %d shares, average %d", qty, cost/qty)
+	}
+	snap, _ := f.e.Snapshot("1150")
+	if len(snap.Bids) != 1 || snap.Bids[0].Price != 3060 || snap.Bids[0].Qty != 100 || snap.Asks[0].Price != 3062 {
+		t.Fatalf("book: %+v", snap)
+	}
+	f.send(Command{Type: "cancel", UserID: f.buyer, OrderID: got.OrderID})
+	if f.balance(f.buyer, "reserved") != 0 || f.balance(f.buyer, "cash") != startCash-value-fees {
+		t.Fatalf("after cancel: cash=%d reserved=%d", f.balance(f.buyer, "cash"), f.balance(f.buyer, "reserved"))
+	}
+	f.checkLedger()
+}
+
+func TestFillOrKillAndFillAvailable(t *testing.T) {
+	f := setup(t)
+	f.send(Command{UserID: f.seller, Side: "sell", Kind: "limit", Price: 2700, Qty: 100})
+
+	ev := f.send(Command{UserID: f.buyer, Side: "buy", Kind: "limit", Price: 2700, Qty: 150, TIF: "fok"})
+	if got := orderEvent(t, ev, f.buyer); got.Reason != "fok_not_filled" {
+		t.Fatalf("fok: %+v", got)
+	}
+	if f.balance(f.buyer, "cash") != startCash || f.int(`SELECT count(*) FROM trades`) != 0 {
+		t.Fatalf("a failed all-or-nothing order must change nothing")
+	}
+	ev = f.send(Command{UserID: f.buyer, Side: "buy", Kind: "limit", Price: 2700, Qty: 150, TIF: "ioc"})
+	if got := orderEvent(t, ev, f.buyer); got.Status != "cancelled" || got.FilledQty != 100 {
+		t.Fatalf("ioc: %+v", got)
+	}
+	if f.balance(f.buyer, "cash") != startCash-270000 || f.balance(f.buyer, "reserved") != 0 {
+		t.Fatalf("ioc cash=%d reserved=%d", f.balance(f.buyer, "cash"), f.balance(f.buyer, "reserved"))
+	}
+	if snap, _ := f.e.Snapshot("2222"); len(snap.Bids) != 0 || len(snap.Asks) != 0 {
+		t.Fatalf("ioc left something in the book: %+v", snap)
 	}
 	f.checkLedger()
 }
@@ -292,6 +373,8 @@ func TestRejections(t *testing.T) {
 		{"below low limit", Command{UserID: f.buyer, Side: "buy", Kind: "limit", Price: 2429, Qty: 1}, "outside_daily_limits"},
 		{"unknown symbol", Command{UserID: f.buyer, Symbol: "9999", Side: "buy", Kind: "limit", Price: 2700, Qty: 1}, "unknown_symbol"},
 		{"unknown user", Command{UserID: 9999, Side: "buy", Kind: "limit", Price: 2700, Qty: 1}, "unknown_user"},
+		{"market order with an empty book", Command{UserID: f.buyer, Side: "buy", Kind: "market", Qty: 10}, "no_liquidity"},
+		{"price off the 0.02 grid", Command{UserID: f.buyer, Side: "buy", Kind: "limit", Price: 2701, Qty: 1}, "bad_tick"},
 		{"zero qty", Command{UserID: f.buyer, Side: "buy", Kind: "limit", Price: 2700, Qty: 0}, "bad_quantity"},
 		{"bad kind", Command{UserID: f.buyer, Side: "buy", Kind: "stop", Price: 2700, Qty: 1}, "bad_kind"},
 	}
@@ -335,6 +418,17 @@ func TestMarketHours(t *testing.T) {
 		return func() time.Time { return time.Date(today.Year(), today.Month(), today.Day(), h, m, 0, 0, riyadh) }
 	}
 	cmd := Command{UserID: f.buyer, Side: "buy", Kind: "limit", Price: 2600, Qty: 1}
+
+	// A day that is not a trading day is closed whatever the hour.
+	f.e.Now = at(12, 0)
+	other := (int(today.Weekday()) + 1) % 7
+	f.exec(`UPDATE settings SET value = $1 WHERE key = 'market_days'`, fmt.Sprintf("[%d]", other))
+	f.e.days = map[int]bool{other: true}
+	if got := orderEvent(t, f.send(cmd), f.buyer); got.Reason != "market_closed" {
+		t.Fatalf("non-trading day: %+v", got)
+	}
+	f.exec(`UPDATE settings SET value = '[0,1,2,3,4,5,6]' WHERE key = 'market_days'`)
+	f.e.days = map[int]bool{0: true, 1: true, 2: true, 3: true, 4: true, 5: true, 6: true}
 
 	for _, c := range []struct {
 		h, m int
@@ -534,4 +628,42 @@ func TestCompanyListedAfterStartupBecomesTradable(t *testing.T) {
 		t.Fatalf("limits not set for new company: %+v", got)
 	}
 	f.checkLedger()
+}
+
+func TestNewListingTradesWithWiderLimitsForThreeDays(t *testing.T) {
+	f := setup(t)
+	clock := time.Now()
+	f.e.Now = func() time.Time { return clock }
+	f.exec(`INSERT INTO companies (symbol, name, shares_outstanding, ref_price, status)
+	        VALUES ('9002', 'IPO Co', 1000000, 4000, 'pending')`)
+	clock = clock.Add(refreshEvery + time.Second)
+	if err := f.e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Listing day: the API marks it listed and trading.
+	f.exec(`UPDATE companies SET status = 'trading', listed_at = current_date WHERE symbol = '9002'`)
+	clock = clock.Add(refreshEvery + time.Second)
+	buy := func(price int64) Event {
+		return orderEvent(t, f.send(Command{UserID: f.buyer, Symbol: "9002", Side: "buy", Kind: "limit", Price: price, Qty: 1}), f.buyer)
+	}
+	// 40.00 +/- 30% = 28.00 .. 52.00.
+	if got := buy(5200); got.Status != "open" {
+		t.Fatalf("52.00 on listing day: %+v", got)
+	}
+	if got := buy(5205); got.Reason != "outside_daily_limits" {
+		t.Fatalf("52.05 on listing day: %+v", got)
+	}
+	// Day 4 after listing: back to 10% (36.00 .. 44.00 with no trades in between).
+	for day := 0; day < 3; day++ { // the engine opens every day as it comes
+		clock = clock.Add(24 * time.Hour)
+		if err := f.e.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := buy(4400); got.Status != "open" {
+		t.Fatalf("44.00 on day four: %+v", got)
+	}
+	if got := buy(4600); got.Reason != "outside_daily_limits" {
+		t.Fatalf("46.00 on day four: %+v", got)
+	}
 }

@@ -140,6 +140,22 @@ class ApiTest extends TestCase
         $this->assertArrayNotHasKey('price', $queued[0]);
     }
 
+    public function test_fill_options_are_passed_to_the_engine(): void
+    {
+        $token = $this->registerUser()['token'];
+        $order = ['symbol' => '2222', 'side' => 'buy', 'kind' => 'limit', 'price' => 2700, 'qty' => 10];
+        $this->withToken($token)->postJson('/api/v1/orders', $order + ['tif' => 'fok'])->assertStatus(202);
+        $this->withToken($token)->postJson('/api/v1/orders', $order + ['tif' => 'ioc'])->assertStatus(202);
+        $this->withToken($token)->postJson('/api/v1/orders', $order + ['tif' => 'day'])->assertStatus(202);
+        $this->withToken($token)->postJson('/api/v1/orders', $order + ['tif' => 'whenever'])->assertStatus(422);
+
+        $queued = $this->queued();
+        $this->assertCount(3, $queued);
+        $this->assertSame('fok', $queued[0]['tif']);
+        $this->assertSame('ioc', $queued[1]['tif']);
+        $this->assertArrayNotHasKey('tif', $queued[2]);
+    }
+
     public function test_invalid_orders_are_not_queued(): void
     {
         $token = $this->registerUser()['token'];

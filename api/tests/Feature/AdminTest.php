@@ -64,6 +64,21 @@ class AdminTest extends TestCase
         $this->assertSame('"09:30"', DB::table('settings')->where('key', 'market_open')->value('value'));
     }
 
+    public function test_commission_and_trading_days_settings(): void
+    {
+        $this->withToken($this->admin)->putJson('/api/v1/admin/settings', ['commission_bps' => 15.5, 'market_days' => [4, 0, 1, 2, 3]])
+            ->assertOk()->assertJsonPath('settings.commission_bps', 15.5)->assertJsonPath('settings.market_days', [0, 1, 2, 3, 4]);
+        $this->assertSame('15.5', DB::table('settings')->where('key', 'commission_bps')->value('value'));
+        $this->assertSame('[0, 1, 2, 3, 4]', DB::table('settings')->where('key', 'market_days')->value('value'));
+
+        $this->withToken($this->admin)->putJson('/api/v1/admin/settings', ['market_days' => []])->assertStatus(422);
+        $this->withToken($this->admin)->putJson('/api/v1/admin/settings', ['market_days' => [7]])->assertStatus(422);
+        $this->withToken($this->admin)->putJson('/api/v1/admin/settings', ['commission_bps' => -1])->assertStatus(422);
+        $this->withToken($this->admin)->putJson('/api/v1/admin/settings', ['margin_call_bps' => 2000, 'liquidation_bps' => 2500])->assertStatus(422);
+        $this->withToken($this->admin)->putJson('/api/v1/admin/settings', ['financing_fee_bps' => 150, 'financing_days' => 14])
+            ->assertOk()->assertJsonPath('settings.financing_fee_bps', 150)->assertJsonPath('settings.financing_days', 14);
+    }
+
     public function test_bot_tuning_and_scenario(): void
     {
         $this->withToken($this->admin)->putJson('/api/v1/admin/bots/1120', [

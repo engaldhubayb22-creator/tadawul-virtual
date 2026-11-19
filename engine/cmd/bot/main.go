@@ -25,6 +25,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/engaldhubayb22-creator/tadawul-virtual/engine/book"
 	"github.com/engaldhubayb22-creator/tadawul-virtual/engine/maker"
 	"github.com/engaldhubayb22-creator/tadawul-virtual/engine/service"
 )
@@ -157,17 +158,27 @@ func main() {
 			if seen {
 				m.Mid = old
 			}
-			mid := maker.NextMid(m, s.cfg, rng)
+			// The price step follows the price band the stock is trading in.
+			m.Tick = book.BandTick(m.Mid)
+			mid, _ := book.NearestTicks(maker.NextMid(m, s.cfg, rng))
 			mids[s.id] = mid
 
 			if !seen || mid != old || !quoting[s.id] {
 				pull(s.id)
 				bids, asks := maker.Quotes(m, mid, s.cfg, rng)
+				// Near a band edge a level can fall between two valid prices:
+				// bids move down to the grid and asks move up, never inward.
 				for _, q := range bids {
-					send(service.Command{Type: "new", UserID: mm, Symbol: s.symbol, Side: "buy", Kind: "limit", Price: q.Price, Qty: q.Qty})
+					price, _ := book.NearestTicks(q.Price)
+					if price >= s.market.Low {
+						send(service.Command{Type: "new", UserID: mm, Symbol: s.symbol, Side: "buy", Kind: "limit", Price: price, Qty: q.Qty})
+					}
 				}
 				for _, q := range asks {
-					send(service.Command{Type: "new", UserID: mm, Symbol: s.symbol, Side: "sell", Kind: "limit", Price: q.Price, Qty: q.Qty})
+					_, price := book.NearestTicks(q.Price)
+					if price <= s.market.High {
+						send(service.Command{Type: "new", UserID: mm, Symbol: s.symbol, Side: "sell", Kind: "limit", Price: price, Qty: q.Qty})
+					}
 				}
 				quoting[s.id] = true
 			}

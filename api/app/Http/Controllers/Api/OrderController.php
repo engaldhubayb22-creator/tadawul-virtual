@@ -25,7 +25,7 @@ class OrderController extends Controller
             ->where('o.user_id', $request->user()->id)
             ->orderByDesc('o.id')->limit(200)
             ->select('o.id', 'c.symbol', 'o.side', 'o.kind', 'o.price', 'o.qty', 'o.filled_qty',
-                'o.status', 'o.idempotency_key as key', 'o.created_at');
+                'o.status', 'o.time_in_force as tif', 'o.reserved_amount', 'o.idempotency_key as key', 'o.created_at');
 
         if ($request->query('status') === 'open') {
             $query->whereIn('o.status', ['open', 'partial']);
@@ -46,6 +46,9 @@ class OrderController extends Controller
             'price' => ['required_if:kind,limit', 'nullable', 'integer', 'min:1'],
             'qty' => ['required', 'integer', 'min:1', 'max:100000000'],
             'key' => ['nullable', 'string', 'max:64'],
+            // day: the remainder waits in the book; ioc: fill what is there and cancel
+            // the rest; fok: fill the whole quantity at once or nothing.
+            'tif' => ['nullable', Rule::in(['day', 'ioc', 'fok'])],
         ]);
 
         $key = $data['key'] ?? (string) Str::uuid();
@@ -60,6 +63,9 @@ class OrderController extends Controller
         ];
         if ($data['kind'] === 'limit') {
             $command['price'] = (int) $data['price'];
+        }
+        if (in_array($data['tif'] ?? 'day', ['ioc', 'fok'], true)) {
+            $command['tif'] = $data['tif'];
         }
         OrderQueue::send($command);
 

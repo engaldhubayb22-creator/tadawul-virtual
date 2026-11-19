@@ -23,13 +23,24 @@ class AdminController extends Controller
         'market_close' => ['date_format:H:i'],
         'market_hours_enforced' => ['boolean'],
         'bots_enabled' => ['boolean'],
+        'commission_bps' => ['numeric', 'between:0,100'],
+        'market_days' => ['array', 'min:1'],
+        'market_days.*' => ['integer', 'between:0,6', 'distinct'],
+        'financing_enabled' => ['boolean'],
+        'financing_fee_bps' => ['integer', 'between:0,2000'],
+        'financing_days' => ['integer', 'between:1,365'],
+        'financing_max_ratio_bps' => ['integer', 'between:0,30000'],
+        'margin_call_bps' => ['integer', 'between:1,9999'],
+        'liquidation_bps' => ['integer', 'between:1,9999'],
     ];
 
     public function overview(): JsonResponse
     {
         $settings = [];
         foreach (array_keys(self::SETTINGS) as $key) {
-            $settings[$key] = Ledger::setting($key);
+            if (! str_contains($key, '.')) {
+                $settings[$key] = Ledger::setting($key);
+            }
         }
 
         $companies = DB::select(<<<'SQL'
@@ -66,6 +77,13 @@ class AdminController extends Controller
     public function settings(Request $request): JsonResponse
     {
         $data = $request->validate(array_map(fn ($rules) => ['sometimes', ...$rules], self::SETTINGS));
+        if (isset($data['market_days'])) {
+            $data['market_days'] = array_values(array_map('intval', $data['market_days']));
+            sort($data['market_days']);
+        }
+        if (isset($data['margin_call_bps'], $data['liquidation_bps']) && $data['liquidation_bps'] >= $data['margin_call_bps']) {
+            return response()->json(['message' => 'حد التسييل يجب أن يكون أقل من حد تنبيه الهامش'], 422);
+        }
         if (isset($data['market_open'], $data['market_close']) && $data['market_open'] >= $data['market_close']) {
             return response()->json(['message' => 'وقت الافتتاح يجب أن يسبق وقت الإغلاق'], 422);
         }
@@ -73,7 +91,7 @@ class AdminController extends Controller
         DB::transaction(function () use ($data, $request) {
             foreach ($data as $key => $value) {
                 DB::table('settings')->where('key', $key)
-                    ->update(['value' => json_encode($value), 'updated_at' => DB::raw('now()')]);
+                    ->update(['value' => json_encode($key === 'commission_bps' ? (float) $value : $value), 'updated_at' => DB::raw('now()')]);
             }
             $this->audit($request, 'settings.update', $data);
         });

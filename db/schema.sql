@@ -49,7 +49,8 @@ INSERT INTO settings (key, value) VALUES
     ('market_timezone',          '"Asia/Riyadh"'),
     ('daily_limit_bps',          '1000'),                -- 10%
     ('market_hours_enforced',    'true'),
-    ('commission_bps',           '0');
+    ('commission_bps',           '15.5'),                -- charged to each side of a trade
+    ('market_days',              '[0,1,2,3,4,5,6]');     -- 0 = Sunday ... 6 = Saturday
 
 -- ---------------------------------------------------------------------------
 -- Double-entry ledger
@@ -119,6 +120,8 @@ CREATE TABLE companies (
     tick_size          BIGINT NOT NULL DEFAULT 1 CHECK (tick_size > 0),
     -- Listing price: the reference for the first trading day's limits.
     ref_price          BIGINT NOT NULL CHECK (ref_price > 0),
+    -- Set when an IPO lists: the first three trading days get wider limits.
+    listed_at          DATE,
     status             TEXT   NOT NULL DEFAULT 'trading'
                        CHECK (status IN ('pending', 'trading', 'halted', 'delisted')),
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -133,14 +136,17 @@ CREATE TABLE orders (
     price           BIGINT CHECK (price > 0),            -- NULL for market orders
     stop_price      BIGINT CHECK (stop_price > 0),
     qty             BIGINT NOT NULL CHECK (qty > 0),
-    -- Per-share amount reserved for a buy order: the limit price, or the
-    -- day's high limit for a market order. NULL for sell orders.
+    -- Worst price a buy order may pay: its limit, or for a market order five
+    -- price steps above the best offer when it arrived. NULL for sell orders.
     reserve_price   BIGINT CHECK (reserve_price > 0),
     filled_qty      BIGINT NOT NULL DEFAULT 0 CHECK (filled_qty >= 0),
     status          TEXT   NOT NULL DEFAULT 'new'
                     CHECK (status IN ('new', 'open', 'partial', 'filled',
                                       'cancelled', 'rejected', 'expired')),
-    time_in_force   TEXT   NOT NULL DEFAULT 'day' CHECK (time_in_force IN ('day', 'gtc')),
+    -- day/gtc rest in the book; ioc fills what it can; fok fills all or nothing.
+    time_in_force   TEXT   NOT NULL DEFAULT 'day' CHECK (time_in_force IN ('day', 'gtc', 'ioc', 'fok')),
+    -- Cash still held for this buy order (price and commission). Released when the order ends.
+    reserved_amount BIGINT NOT NULL DEFAULT 0 CHECK (reserved_amount >= 0),
     -- Client-supplied key: the same request sent twice creates one order.
     idempotency_key TEXT   NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),

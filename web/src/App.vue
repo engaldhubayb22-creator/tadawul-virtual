@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import AdminPanel from './AdminPanel.vue'
 import AuthModal from './AuthModal.vue'
 import ChartPanel from './ChartPanel.vue'
+import { nearestTicks, tickFor } from './ticks'
 import {
   cancelOrder, connect, loadAccount, loadHolders, loadIpos, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
   loadChat, loadThreads, openThread, repayFinancing, requestFinancing, restoreSession, select, sendChat, setChatRoom,
@@ -27,15 +28,17 @@ const marketOpen = computed(() => {
 })
 
 // ---- order ticket
-const ticket = reactive({ side: 'buy', kind: 'limit', price: '', qty: 100 })
+const ticket = reactive({ side: 'buy', kind: 'limit', price: '', qty: 100, tif: 'day' })
+const choices = ref(null) // the two valid prices offered when the typed price is between steps
 const busy = ref(false)
 watch(() => state.selected, () => { ticket.price = current.value ? (current.value.last / 100).toFixed(2) : '' })
 watch(current, (c) => { if (c && ticket.price === '') ticket.price = (c.last / 100).toFixed(2) })
 
-// Price step in riyals. The input's minimum is the same value so every
-// price on the tick grid passes the browser's own validation.
-const tick = computed(() => (current.value?.tick_size || 1) / 100)
 const priceHalalas = computed(() => Math.round(Number(ticket.price) * 100))
+// The price step depends on the price itself (0.01 below 25, 0.02 from 25, ...).
+const tick = computed(() => tickFor(priceHalalas.value || current.value?.last || 0) / 100)
+watch(() => [ticket.price, ticket.kind], () => { choices.value = null })
+function choose(price) { ticket.price = (price / 100).toFixed(2); choices.value = null }
 const estimate = computed(() => {
   const p = ticket.kind === 'market' ? (current.value?.last || 0) : priceHalalas.value
   return p * Number(ticket.qty || 0)
@@ -51,8 +54,13 @@ async function submit() {
   if (!state.token) { state.showAuth = true; return }
   busy.value = true
   try {
-    const order = { symbol: state.selected, side: ticket.side, kind: ticket.kind, qty: Number(ticket.qty) }
-    if (ticket.kind === 'limit') order.price = priceHalalas.value
+    const order = { symbol: state.selected, side: ticket.side, kind: ticket.kind, qty: Number(ticket.qty), tif: ticket.tif }
+    if (ticket.kind === 'limit') {
+      // A price between two steps is not guessed: the trader picks one.
+      const [down, up] = nearestTicks(priceHalalas.value)
+      if (down !== up) { choices.value = [down, up]; return }
+      order.price = priceHalalas.value
+    }
     await placeOrder(order)
   } catch (e) {
     toast(e.message, 'bad')
@@ -235,9 +243,23 @@ onMounted(async () => {
           <button type="button" :class="{ on: ticket.kind === 'market' }" @click="ticket.kind = 'market'">سوق</button>
         </div>
         <label v-if="ticket.kind === 'limit'">السعر (ريال)
-          <input v-model="ticket.price" type="number" :min="tick" :step="tick" required dir="ltr" />
+          <input v-model="ticket.price" type="number" min="0.01" step="0.01" required dir="ltr" />
+          <small class="hint">خطوة السعر عند هذا المستوى {{ tick.toFixed(2) }}</small>
         </label>
+        <div v-if="choices" class="choices">
+          <span>السعر {{ ticket.price }} بين خطوتين. اختر أقرب سعر مسموح:</span>
+          <button type="button" @click="choose(choices[0])"><b class="num">{{ money(choices[0]) }}</b></button>
+          <button type="button" @click="choose(choices[1])"><b class="num">{{ money(choices[1]) }}</b></button>
+        </div>
+        <p v-if="ticket.kind === 'market'" class="hint">ينفَّذ من أفضل سعر متاح وحتى 5 خطوات سعرية منه. ما يبقى يتحول إلى أمر محدد عند آخر سعر تنفيذ.</p>
         <label>الكمية<input v-model="ticket.qty" type="number" min="1" step="1" required dir="ltr" /></label>
+        <label>عند عدم توفر الكمية كاملة
+          <select v-model="ticket.tif">
+            <option value="day">يبقى الباقي في السوق</option>
+            <option value="ioc">نفّذ المتاح وألغِ الباقي</option>
+            <option value="fok">نفّذ كامل الكمية أو ألغِ الكل</option>
+          </select>
+        </label>
         <div class="est">القيمة التقديرية <b class="num">{{ money(estimate) }}</b></div>
         <button class="go" :class="ticket.side" :disabled="busy || !state.selected">
           {{ ticket.side === 'buy' ? 'شراء' : 'بيع' }} {{ current?.name }}
@@ -388,15 +410,16 @@ onMounted(async () => {
       </table>
       <p v-else-if="!state.user" class="empty">سجّل الدخول لتبدأ التداول برصيدك الافتراضي.</p>
       <table v-else-if="tab === 'orders'">
-        <thead><tr><th>السهم</th><th>الاتجاه</th><th>السعر</th><th>الكمية</th><th>المنفّذ</th><th></th></tr></thead>
+        <thead><tr><th>السهم</th><th>الاتجاه</th><th>السعر</th><th>الكمية</th><th>المنفّذ</th><th>المحجوز له</th><th></th></tr></thead>
         <tbody>
           <tr v-for="o in state.orders" :key="o.id">
             <td class="num">{{ o.symbol }}</td>
             <td :class="o.side === 'buy' ? 'up' : 'down'">{{ o.side === 'buy' ? 'شراء' : 'بيع' }}</td>
             <td class="num">{{ money(o.price) }}</td><td class="num">{{ qty(o.qty) }}</td><td class="num">{{ qty(o.filled_qty) }}</td>
+            <td class="num muted">{{ o.side === 'buy' ? money(o.reserved_amount) : qty(o.qty - o.filled_qty) + ' سهم' }}</td>
             <td><button class="ghost" @click="cancel(o.id)">إلغاء</button></td>
           </tr>
-          <tr v-if="!state.orders.length"><td colspan="6" class="empty">لا توجد أوامر مفتوحة</td></tr>
+          <tr v-if="!state.orders.length"><td colspan="7" class="empty">لا توجد أوامر مفتوحة</td></tr>
         </tbody>
       </table>
       <table v-else>

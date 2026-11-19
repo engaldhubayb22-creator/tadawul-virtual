@@ -96,16 +96,183 @@ func TestPartialFillRestsRemainder(t *testing.T) {
 	}
 }
 
-func TestMarketOrderSweepsAndNeverRests(t *testing.T) {
-	b := New("2222", 1)
-	mustSubmit(t, b, limit(1, 10, Sell, 2700, 50))
-	mustSubmit(t, b, limit(2, 11, Sell, 2720, 50))
-	res := mustSubmit(t, b, market(3, 20, Buy, 150))
-	if len(res.Trades) != 2 || res.Cancelled != 50 || res.Rested != 0 {
+// The trader's limit is the worst price accepted; every fill happens at the
+// resting order's own price, cheapest first, and stops at the limit.
+func TestLimitBuyTakesBetterPricesFirstAndStopsAtItsLimit(t *testing.T) {
+	b := New("1150", 2)
+	b.TickFn = BandTick
+	mustSubmit(t, b, limit(1, 10, Sell, 3000, 200))
+	mustSubmit(t, b, limit(2, 10, Sell, 3010, 300))
+	mustSubmit(t, b, limit(3, 10, Sell, 3060, 400))
+	mustSubmit(t, b, limit(4, 10, Sell, 3062, 500))
+
+	res := mustSubmit(t, b, limit(5, 20, Buy, 3060, 1000))
+	want := []Trade{{Price: 3000, Qty: 200}, {Price: 3010, Qty: 300}, {Price: 3060, Qty: 400}}
+	if len(res.Trades) != 3 {
+		t.Fatalf("trades = %+v", res.Trades)
+	}
+	var qty, value int64
+	for i, tr := range res.Trades {
+		if tr.Price != want[i].Price || tr.Qty != want[i].Qty {
+			t.Fatalf("trade %d = %+v", i, tr)
+		}
+		qty += tr.Qty
+		value += tr.Price * tr.Qty
+	}
+	if qty != 900 || value/qty != 3030 || value%qty != 0 {
+		t.Fatalf("filled %d at average %d.%d", qty, value/qty, value%qty)
+	}
+	if res.Rested != 100 || res.RestPrice != 3060 {
+		t.Fatalf("remainder: %+v", res)
+	}
+	bids, asks := b.Depth(5)
+	if len(bids) != 1 || bids[0].Price != 3060 || bids[0].Qty != 100 || asks[0].Price != 3062 || asks[0].Qty != 500 {
+		t.Fatalf("book: bids %+v asks %+v", bids, asks)
+	}
+}
+
+func TestLimitSellTakesHigherBidsFirstAndEarlierOrdersFirst(t *testing.T) {
+	b := New("1150", 2)
+	b.TickFn = BandTick
+	mustSubmit(t, b, limit(1, 10, Buy, 2940, 100))
+	mustSubmit(t, b, limit(2, 11, Buy, 3000, 100)) // best price
+	mustSubmit(t, b, limit(3, 12, Buy, 2990, 100)) // same price as 4, entered first
+	mustSubmit(t, b, limit(4, 13, Buy, 2990, 100))
+	mustSubmit(t, b, limit(5, 14, Buy, 2938, 100)) // below the seller's limit
+
+	res := mustSubmit(t, b, limit(6, 20, Sell, 2940, 350))
+	order := []uint64{2, 3, 4, 1}
+	prices := []int64{3000, 2990, 2990, 2940}
+	qtys := []int64{100, 100, 100, 50}
+	if len(res.Trades) != 4 {
+		t.Fatalf("trades = %+v", res.Trades)
+	}
+	for i, tr := range res.Trades {
+		if tr.BuyOrderID != order[i] || tr.Price != prices[i] || tr.Qty != qtys[i] {
+			t.Fatalf("trade %d = %+v", i, tr)
+		}
+	}
+	if res.Rested != 0 || b.OpenOrders() != 2 { // half of order 1, and order 5
+		t.Fatalf("rested %d, open %d", res.Rested, b.OpenOrders())
+	}
+}
+
+// Best ask 30.00, step 0.02: a market buy may pay up to 30.10. What is left
+// becomes a limit order at the last price it traded at.
+func TestMarketOrderWalksFiveStepsThenRestsAtLastPrice(t *testing.T) {
+	b := New("1150", 2)
+	b.TickFn = BandTick
+	mustSubmit(t, b, limit(1, 10, Sell, 3000, 100))
+	mustSubmit(t, b, limit(2, 10, Sell, 3010, 100))
+	mustSubmit(t, b, limit(3, 10, Sell, 3012, 100))
+	if cap, _ := b.MarketCap(Buy); cap != 3010 {
+		t.Fatalf("cap = %d", cap)
+	}
+	res := mustSubmit(t, b, market(4, 20, Buy, 500))
+	if len(res.Trades) != 2 || res.Trades[1].Price != 3010 {
+		t.Fatalf("trades = %+v", res.Trades)
+	}
+	if res.Rested != 300 || res.RestPrice != 3010 || res.Cancelled != 0 {
+		t.Fatalf("remainder: %+v", res)
+	}
+	if bid, _ := b.BestBid(); bid != 3010 {
+		t.Fatalf("best bid = %d", bid)
+	}
+	// The rested remainder is a normal limit order: a later seller hits it.
+	sell := mustSubmit(t, b, limit(5, 11, Sell, 3010, 50))
+	if len(sell.Trades) != 1 || sell.Trades[0].BuyOrderID != 4 || sell.Trades[0].Price != 3010 {
+		t.Fatalf("sell = %+v", sell.Trades)
+	}
+
+	// Sell side mirrors it: best bid 30.10 (250 left), floor 30.00.
+	if cap, _ := b.MarketCap(Sell); cap != 3000 {
+		t.Fatalf("sell cap = %d", cap)
+	}
+}
+
+func TestMarketCapStaysInsideDailyLimits(t *testing.T) {
+	b := New("1150", 2)
+	b.TickFn = BandTick
+	b.SetLimits(2520, 3004)
+	mustSubmit(t, b, limit(1, 10, Sell, 3000, 100))
+	mustSubmit(t, b, limit(2, 10, Sell, 3004, 100))
+	if cap, _ := b.MarketCap(Buy); cap != 3004 {
+		t.Fatalf("cap = %d, want the high limit", cap)
+	}
+	res := mustSubmit(t, b, market(3, 20, Buy, 300))
+	if len(res.Trades) != 2 || res.Rested != 100 || res.RestPrice != 3004 {
 		t.Fatalf("got %+v", res)
 	}
-	if b.OpenOrders() != 0 {
-		t.Fatalf("book should be empty, has %d orders", b.OpenOrders())
+}
+
+func TestFillAvailableAndFillAllOrNothing(t *testing.T) {
+	newBook := func() *Book {
+		b := New("1150", 2)
+		b.TickFn = BandTick
+		mustSubmit(t, b, limit(1, 10, Sell, 3000, 100))
+		mustSubmit(t, b, limit(2, 10, Sell, 3002, 100))
+		return b
+	}
+	// IOC: take the 200 on offer, cancel the other 100, leave nothing behind.
+	b := newBook()
+	o := limit(3, 20, Buy, 3002, 300)
+	o.TIF = IOC
+	res := mustSubmit(t, b, o)
+	if len(res.Trades) != 2 || res.Cancelled != 100 || res.Rested != 0 || b.OpenOrders() != 0 {
+		t.Fatalf("ioc: %+v open %d", res, b.OpenOrders())
+	}
+	// FOK that cannot be filled: nothing trades, the book is untouched.
+	b = newBook()
+	o = limit(4, 20, Buy, 3002, 300)
+	o.TIF = FOK
+	res = mustSubmit(t, b, o)
+	if len(res.Trades) != 0 || res.Cancelled != 300 || b.OpenOrders() != 2 {
+		t.Fatalf("fok short: %+v open %d", res, b.OpenOrders())
+	}
+	// FOK that fits: fills completely.
+	o = limit(5, 20, Buy, 3002, 200)
+	o.TIF = FOK
+	res = mustSubmit(t, b, o)
+	if len(res.Trades) != 2 || res.Cancelled != 0 || b.OpenOrders() != 0 {
+		t.Fatalf("fok full: %+v", res)
+	}
+	// FOK market order obeys the five-step cap too.
+	b = newBook()
+	mustSubmit(t, b, limit(6, 10, Sell, 3020, 500)) // beyond 30.10
+	o = market(7, 20, Buy, 300)
+	o.TIF = FOK
+	if res = mustSubmit(t, b, o); len(res.Trades) != 0 || res.Cancelled != 300 {
+		t.Fatalf("fok market: %+v", res)
+	}
+}
+
+func TestBandTicks(t *testing.T) {
+	for _, c := range []struct{ price, tick int64 }{
+		{100, 1}, {2499, 1}, {2500, 2}, {4998, 2}, {5000, 5}, {9995, 5},
+		{10000, 10}, {24990, 10}, {25000, 20}, {49980, 20}, {50000, 50}, {120000, 50},
+	} {
+		if got := BandTick(c.price); got != c.tick {
+			t.Errorf("BandTick(%d) = %d, want %d", c.price, got, c.tick)
+		}
+	}
+	b := New("1150", 1)
+	b.TickFn = BandTick
+	if _, err := b.Submit(limit(1, 1, Buy, 3031, 10)); !errors.Is(err, ErrBadTick) {
+		t.Fatalf("30.31 must be rejected, got %v", err)
+	}
+	if down, up := NearestTicks(3031); down != 3030 || up != 3032 {
+		t.Fatalf("nearest to 30.31 = %d, %d", down, up)
+	}
+	if down, up := NearestTicks(3030); down != 3030 || up != 3030 {
+		t.Fatalf("30.30 is valid, got %d, %d", down, up)
+	}
+	if down, up := NearestTicks(10003); down != 10000 || up != 10010 {
+		t.Fatalf("nearest to 100.03 = %d, %d", down, up)
+	}
+	for _, p := range []int64{3030, 3032, 2499, 5005, 10010} {
+		if _, err := b.Submit(limit(uint64(p), 1, Buy, p, 1)); err != nil {
+			t.Errorf("%d should be accepted: %v", p, err)
+		}
 	}
 }
 
@@ -174,6 +341,7 @@ func TestValidation(t *testing.T) {
 		{"zero qty", limit(1, 1, Buy, 2700, 0), ErrBadQty},
 		{"zero price", limit(1, 1, Buy, 0, 10), ErrBadPrice},
 		{"off tick", limit(1, 1, Buy, 2701, 10), ErrBadTick},
+		{"off tick and out of limits", limit(1, 1, Buy, 2971, 10), ErrOutOfLimits},
 		{"below low limit", limit(1, 1, Buy, 2425, 10), ErrOutOfLimits},
 		{"above high limit", limit(1, 1, Sell, 2975, 10), ErrOutOfLimits},
 		{"bad side", Order{ID: 1, UserID: 1, Kind: Limit, Price: 2700, Qty: 10}, ErrBadSide},
@@ -196,17 +364,6 @@ func TestValidation(t *testing.T) {
 	b.Halted = true
 	if _, err := b.Submit(limit(8, 1, Buy, 2700, 10)); !errors.Is(err, ErrHalted) {
 		t.Fatalf("halted err = %v", err)
-	}
-}
-
-func TestMarketOrderRespectsLimits(t *testing.T) {
-	b := New("2222", 1)
-	mustSubmit(t, b, limit(1, 10, Sell, 2700, 50))
-	mustSubmit(t, b, limit(2, 11, Sell, 2900, 50))
-	b.SetLimits(2500, 2800) // 2900 is now outside the limits
-	res := mustSubmit(t, b, market(3, 20, Buy, 100))
-	if len(res.Trades) != 1 || res.Trades[0].Price != 2700 || res.Cancelled != 50 {
-		t.Fatalf("got %+v", res)
 	}
 }
 

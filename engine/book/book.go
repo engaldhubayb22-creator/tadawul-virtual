@@ -24,6 +24,56 @@ const (
 	Market Kind = 2
 )
 
+// TIF says what happens to the part of an order that cannot trade at once.
+type TIF int8
+
+const (
+	Rest TIF = 0 // keep the remainder in the book
+	IOC  TIF = 1 // fill what is available, cancel the remainder
+	FOK  TIF = 2 // fill the whole quantity at once or do nothing
+)
+
+// MarketSteps is how far a market order may walk from the best price it saw
+// on arrival, in price steps.
+const MarketSteps = 5
+
+// BandTick is the price step for a given price, in halalas. The step depends
+// on the price of the order itself:
+//
+//	below 25.00 -> 0.01     25.00 -> 0.02     50.00 -> 0.05
+//	100.00      -> 0.10     250.00 -> 0.20    500.00 and above -> 0.50
+func BandTick(price int64) int64 {
+	switch {
+	case price < 2500:
+		return 1
+	case price < 5000:
+		return 2
+	case price < 10000:
+		return 5
+	case price < 25000:
+		return 10
+	case price < 50000:
+		return 20
+	}
+	return 50
+}
+
+// NearestTicks returns the two valid prices around p: the one at or below it
+// and the one at or above it. They are equal when p is already valid.
+func NearestTicks(p int64) (down, up int64) {
+	t := BandTick(p)
+	down = p / t * t
+	if down == p {
+		return p, p
+	}
+	up = down + t
+	// The step can grow at a band edge (24.99 -> 25.00): keep "up" valid.
+	if r := up % BandTick(up); r != 0 {
+		up += BandTick(up) - r
+	}
+	return down, up
+}
+
 var (
 	ErrBadSide      = errors.New("book: side must be buy or sell")
 	ErrBadKind      = errors.New("book: kind must be limit or market")
@@ -45,6 +95,7 @@ type Order struct {
 	Price     int64
 	Qty       int64
 	Remaining int64
+	TIF       TIF
 }
 
 // Trade is one execution between a resting order and an incoming one.
@@ -62,8 +113,11 @@ type Trade struct {
 // Result describes what happened to a submitted order.
 type Result struct {
 	Trades []Trade
-	// Rested is the quantity left resting in the book (limit orders only).
-	Rested int64
+	// Rested is the quantity left resting in the book, at RestPrice. For a
+	// limit order that is its own price; for a market order it is the price
+	// of its last execution.
+	Rested    int64
+	RestPrice int64
 	// Cancelled is the unfilled quantity that was dropped: the remainder of a
 	// market order, or of any order stopped by self-trade prevention.
 	Cancelled int64
@@ -148,6 +202,9 @@ func (s *sideBook) view(n int) []LevelView {
 type Book struct {
 	Symbol   string
 	TickSize int64
+	// TickFn, when set, gives the price step for each price (see BandTick)
+	// and replaces the fixed TickSize.
+	TickFn func(price int64) int64
 	// LowLimit and HighLimit are the daily price limits; 0 means no limit.
 	LowLimit  int64
 	HighLimit int64
@@ -176,6 +233,68 @@ func New(symbol string, tickSize int64) *Book {
 // limits stay in the book but can no longer trade until limits widen.
 func (b *Book) SetLimits(low, high int64) {
 	b.LowLimit, b.HighLimit = low, high
+}
+
+func (b *Book) tick(price int64) int64 {
+	if b.TickFn != nil {
+		return b.TickFn(price)
+	}
+	return b.TickSize
+}
+
+// MarketCap is the worst price a market order arriving now may trade at:
+// MarketSteps price steps beyond the best opposite price, inside the daily
+// limits. It reports false when the opposite side of the book is empty.
+func (b *Book) MarketCap(side Side) (int64, bool) {
+	opp := &b.asks
+	if side == Sell {
+		opp = &b.bids
+	}
+	if len(opp.levels) == 0 {
+		return 0, false
+	}
+	best := opp.levels[0].price
+	step := b.tick(best)
+	if side == Buy {
+		limit := best + MarketSteps*step
+		if b.HighLimit > 0 && limit > b.HighLimit {
+			limit = b.HighLimit
+		}
+		return limit, true
+	}
+	limit := best - MarketSteps*step
+	if limit < b.LowLimit {
+		limit = b.LowLimit
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	return limit, true
+}
+
+// Fillable is how much of an order could trade right now at limit or
+// better. It stops at the first resting order of the same user, because
+// matching stops there too.
+func (b *Book) Fillable(side Side, user uint64, limit, want int64) int64 {
+	opp := &b.asks
+	if side == Sell {
+		opp = &b.bids
+	}
+	var total int64
+	for _, lv := range opp.levels {
+		if (side == Buy && lv.price > limit) || (side == Sell && lv.price < limit) || !b.withinLimits(lv.price) {
+			break
+		}
+		for _, r := range lv.orders {
+			if r.UserID == user {
+				return total
+			}
+			if total += r.Remaining; total >= want {
+				return total
+			}
+		}
+	}
+	return total
 }
 
 func (b *Book) withinLimits(price int64) bool {
@@ -208,11 +327,11 @@ func (b *Book) validate(o *Order) error {
 		if o.Price <= 0 {
 			return ErrBadPrice
 		}
-		if o.Price%b.TickSize != 0 {
-			return ErrBadTick
-		}
 		if !b.withinLimits(o.Price) {
 			return ErrOutOfLimits
+		}
+		if o.Price%b.tick(o.Price) != 0 {
+			return ErrBadTick
 		}
 	}
 	return nil
@@ -268,16 +387,31 @@ func (b *Book) Submit(in Order) (Result, error) {
 		opp = &b.bids
 	}
 
+	// The worst price this order accepts: the trader's own limit, or for a
+	// market order a few steps beyond the best price available on arrival.
+	limit := o.Price
+	if o.Kind == Market {
+		cap, ok := b.MarketCap(o.Side)
+		if !ok {
+			res.Cancelled = o.Qty // nothing to trade against
+			return res, nil
+		}
+		limit = cap
+	}
+	if o.TIF == FOK && b.Fillable(o.Side, o.UserID, limit, o.Qty) < o.Qty {
+		res.Cancelled = o.Qty
+		return res, nil
+	}
+	var lastPrice int64
+
 matching:
 	for o.Remaining > 0 && len(opp.levels) > 0 {
 		lv := opp.levels[0]
-		if o.Kind == Limit {
-			if o.Side == Buy && lv.price > o.Price {
-				break
-			}
-			if o.Side == Sell && lv.price < o.Price {
-				break
-			}
+		if o.Side == Buy && lv.price > limit {
+			break
+		}
+		if o.Side == Sell && lv.price < limit {
+			break
 		}
 		if !b.withinLimits(lv.price) {
 			break
@@ -296,6 +430,7 @@ matching:
 			o.Remaining -= q
 			lv.qty -= q
 			b.lastPrice = lv.price
+			lastPrice = lv.price
 
 			t := Trade{Price: lv.price, Qty: q, TakerSide: o.Side}
 			if o.Side == Buy {
@@ -320,7 +455,14 @@ matching:
 	}
 
 	if o.Remaining > 0 {
-		if o.Kind == Limit && !res.SelfTradeBlocked {
+		// What is left of a market order becomes a limit order at the price
+		// of its last execution; if it traded nothing it is dropped.
+		rests := o.TIF == Rest && !res.SelfTradeBlocked && (o.Kind == Limit || lastPrice > 0)
+		if rests {
+			if o.Kind == Market {
+				o.Kind, o.Price = Limit, lastPrice
+			}
+			res.RestPrice = o.Price
 			own := &b.bids
 			if o.Side == Sell {
 				own = &b.asks

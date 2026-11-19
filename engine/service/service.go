@@ -32,6 +32,7 @@ type Command struct {
 	Price   int64  `json:"price,omitempty"`
 	Qty     int64  `json:"qty,omitempty"`
 	Key     string `json:"key,omitempty"` // idempotency key
+	TIF     string `json:"tif,omitempty"` // "" or "day": rest; "ioc": fill and cancel; "fok": all or nothing
 	OrderID int64  `json:"order_id,omitempty"`
 }
 
@@ -79,6 +80,8 @@ type Engine struct {
 	closeMin  int
 	enforced  bool
 	limitBps  int64
+	feeTenths int64        // commission in tenths of a basis point (15.5 bps = 155)
+	days      map[int]bool // weekdays the market trades on, 0 = Sunday
 	day       string
 	refreshed time.Time
 	DepthSize int
@@ -147,6 +150,19 @@ func (e *Engine) loadSettings(ctx context.Context) error {
 	if err := get("daily_limit_bps", &e.limitBps); err != nil {
 		return err
 	}
+	var feeBps float64
+	if err := get("commission_bps", &feeBps); err != nil {
+		return err
+	}
+	e.feeTenths = int64(feeBps*10 + 0.5)
+	var days []int
+	if err := get("market_days", &days); err != nil {
+		return err
+	}
+	e.days = map[int]bool{}
+	for _, d := range days {
+		e.days[d] = true
+	}
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
 		return err
@@ -188,7 +204,7 @@ func (e *Engine) refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var added []*company
+	var added, listed []*company
 	for rows.Next() {
 		n := &company{}
 		if err := rows.Scan(&n.id, &n.symbol, &n.tick, &n.status); err != nil {
@@ -196,6 +212,9 @@ func (e *Engine) refresh(ctx context.Context) error {
 			return err
 		}
 		if c := e.byID[n.id]; c != nil {
+			if c.status == "pending" && n.status == "trading" {
+				listed = append(listed, c)
+			}
 			c.status = n.status
 		} else {
 			added = append(added, n)
@@ -209,23 +228,51 @@ func (e *Engine) refresh(ctx context.Context) error {
 	// trading day and give it an empty book.
 	for _, c := range added {
 		if e.day != "" {
-			if _, err := e.db.ExecContext(ctx, `
-				INSERT INTO daily_stats (company_id, trade_date, prev_close, low_limit, high_limit)
-				SELECT c.id, $1::date, c.ref_price,
-				       (((c.ref_price * (10000 - $2::bigint) + 9999) / 10000) + c.tick_size - 1) / c.tick_size * c.tick_size,
-				       ((c.ref_price * (10000 + $2::bigint)) / 10000) / c.tick_size * c.tick_size
-				FROM companies c WHERE c.id = $3
-				ON CONFLICT (company_id, trade_date) DO NOTHING`, e.day, e.limitBps, c.id); err != nil {
-				return err
-			}
-			if err := e.reloadBook(ctx, c); err != nil {
+			if err := e.openCompanyDay(ctx, c); err != nil {
 				return err
 			}
 		}
 		e.byID[c.id], e.bySy[c.symbol] = c, c
 	}
+	// An IPO that just listed: today's limits were opened at the normal
+	// width while it was pending; reopen them at the first-days width.
+	for _, c := range listed {
+		if err := e.openCompanyDay(ctx, c); err != nil {
+			return err
+		}
+	}
 	e.refreshed = e.Now()
 	return nil
+}
+
+// openCompanyDay sets today's limits for one company from its listing price
+// (or yesterday's close) and rebuilds its book.
+func (e *Engine) openCompanyDay(ctx context.Context, c *company) error {
+	if _, err := e.db.ExecContext(ctx, `
+		INSERT INTO daily_stats (company_id, trade_date, prev_close, low_limit, high_limit)
+		SELECT c.id, $1::date, p.prev,
+		       (p.prev * (10000 - w.bps) + 9999) / 10000, (p.prev * (10000 + w.bps)) / 10000
+		FROM companies c
+		CROSS JOIN LATERAL (
+			SELECT CASE WHEN c.listed_at IS NOT NULL AND (
+				SELECT count(*) FROM daily_stats d
+				WHERE d.company_id = c.id AND d.trade_date >= c.listed_at AND d.trade_date < $1::date
+			) < 3 THEN 3000 ELSE $2::bigint END AS bps
+		) w
+		CROSS JOIN LATERAL (
+			SELECT COALESCE(
+				(SELECT d.close FROM daily_stats d
+				 WHERE d.company_id = c.id AND d.trade_date < $1::date AND d.close IS NOT NULL
+				 ORDER BY d.trade_date DESC LIMIT 1),
+				c.ref_price) AS prev
+		) p
+		WHERE c.id = $3
+		ON CONFLICT (company_id, trade_date)
+		DO UPDATE SET low_limit = EXCLUDED.low_limit, high_limit = EXCLUDED.high_limit`,
+		e.day, e.limitBps, c.id); err != nil {
+		return err
+	}
+	return e.reloadBook(ctx, c)
 }
 
 // Tick does the engine's housekeeping when no commands are arriving: it
@@ -243,6 +290,9 @@ func (e *Engine) MarketOpen() bool {
 		return true
 	}
 	t := e.Now().In(e.tz)
+	if !e.days[int(t.Weekday())] {
+		return false
+	}
 	m := t.Hour()*60 + t.Minute()
 	return m >= e.openMin && m < e.closeMin
 }
@@ -272,7 +322,7 @@ func (e *Engine) ensureDay(ctx context.Context) error {
 
 	// Expire day orders left over from earlier days and release what they hold.
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, user_id, company_id, side, COALESCE(reserve_price, 0), qty - filled_qty
+		SELECT id, user_id, company_id, side, qty - filled_qty
 		FROM orders
 		WHERE status IN ('open', 'partial') AND time_in_force = 'day'
 		  AND (created_at AT TIME ZONE $2)::date < $1::date`, day, e.tz.String())
@@ -280,13 +330,13 @@ func (e *Engine) ensureDay(ctx context.Context) error {
 		return err
 	}
 	type stale struct {
-		id, user, company, reserve, remaining int64
-		side                                  string
+		id, user, company, remaining int64
+		side                         string
 	}
 	var old []stale
 	for rows.Next() {
 		var s stale
-		if err := rows.Scan(&s.id, &s.user, &s.company, &s.side, &s.reserve, &s.remaining); err != nil {
+		if err := rows.Scan(&s.id, &s.user, &s.company, &s.side, &s.remaining); err != nil {
 			rows.Close()
 			return err
 		}
@@ -297,7 +347,7 @@ func (e *Engine) ensureDay(ctx context.Context) error {
 		return err
 	}
 	for _, s := range old {
-		if err := e.release(ctx, tx, s.user, s.company, s.side, s.reserve, s.remaining, s.id); err != nil {
+		if err := e.release(ctx, tx, s.user, s.company, s.side, s.remaining, s.id); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -309,9 +359,15 @@ func (e *Engine) ensureDay(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO daily_stats (company_id, trade_date, prev_close, low_limit, high_limit)
 		SELECT c.id, $1::date, p.prev,
-		       (((p.prev * (10000 - $2::bigint) + 9999) / 10000) + c.tick_size - 1) / c.tick_size * c.tick_size,
-		       ((p.prev * (10000 + $2::bigint)) / 10000) / c.tick_size * c.tick_size
+		       (p.prev * (10000 - w.bps) + 9999) / 10000,
+		       (p.prev * (10000 + w.bps)) / 10000
 		FROM companies c
+		CROSS JOIN LATERAL (
+			-- Newly listed: 30% for the first three trading days, then the normal limit.
+			SELECT CASE WHEN c.listed_at IS NOT NULL AND (
+				SELECT count(*) FROM daily_stats d WHERE d.company_id = c.id AND d.trade_date >= c.listed_at
+			) < 3 THEN 3000 ELSE $2::bigint END AS bps
+		) w
 		CROSS JOIN LATERAL (
 			SELECT COALESCE(
 				(SELECT d.close FROM daily_stats d
@@ -343,6 +399,19 @@ func (e *Engine) reloadBook(ctx context.Context, c *company) error {
 		WHERE company_id = $1 AND trade_date = $2::date`, c.id, e.day).Scan(&low, &high, &prev)
 	if err != nil {
 		return fmt.Errorf("limits for %s: %w", c.symbol, err)
+	}
+	b.TickFn = book.BandTick
+	// Limits must be prices a trader can actually enter: move each one
+	// inward onto the price grid of its own band.
+	_, snappedLow := book.NearestTicks(low)
+	snappedHigh, _ := book.NearestTicks(high)
+	if snappedLow != low || snappedHigh != high {
+		if _, err := e.db.ExecContext(ctx, `
+			UPDATE daily_stats SET low_limit = $1, high_limit = $2
+			WHERE company_id = $3 AND trade_date = $4::date`, snappedLow, snappedHigh, c.id, e.day); err != nil {
+			return err
+		}
+		low, high = snappedLow, snappedHigh
 	}
 	b.SetLimits(low, high)
 
@@ -497,6 +566,9 @@ func reject(cmd Command, why string) Event {
 		Key: cmd.Key, Status: "rejected", Reason: why}
 }
 
+// fee is the commission on a trade value, charged to each side.
+func (e *Engine) fee(value int64) int64 { return value * e.feeTenths / 100000 }
+
 func (e *Engine) processNew(ctx context.Context, tx *sql.Tx, cmd Command, touched map[*company]bool) ([]Event, error) {
 	c := e.bySy[cmd.Symbol]
 	if c == nil {
@@ -518,19 +590,33 @@ func (e *Engine) processNew(ctx context.Context, tx *sql.Tx, cmd Command, touche
 	case "market":
 		o.Kind = book.Market
 	}
+	tif := cmd.TIF
+	switch tif {
+	case "", "day":
+		tif = "day"
+	case "ioc":
+		o.TIF = book.IOC
+	case "fok":
+		o.TIF = book.FOK
+	default:
+		return []Event{reject(cmd, "invalid")}, nil
+	}
 	if err := c.book.Validate(o); err != nil {
 		return []Event{reject(cmd, reason(err))}, nil
 	}
 
-	var reservePrice int64
-	if o.Side == book.Buy {
-		reservePrice = o.Price
-		if o.Kind == book.Market {
-			reservePrice = c.book.HighLimit
+	// The worst price the order may trade at: the trader's limit, or for a
+	// market order five price steps beyond the best price available now.
+	worst := o.Price
+	if o.Kind == book.Market {
+		cap, ok := c.book.MarketCap(o.Side)
+		if !ok {
+			return []Event{reject(cmd, "no_liquidity")}, nil
 		}
-		if reservePrice <= 0 {
-			return []Event{reject(cmd, "no_reference_price")}, nil
-		}
+		worst = cap
+	}
+	if o.TIF == book.FOK && c.book.Fillable(o.Side, o.UserID, worst, o.Qty) < o.Qty {
+		return []Event{reject(cmd, "fok_not_filled")}, nil
 	}
 
 	var active bool
@@ -553,9 +639,12 @@ func (e *Engine) processNew(ctx context.Context, tx *sql.Tx, cmd Command, touche
 		return nil, err
 	}
 
-	// Reserve cash (buy) or shares (sell) before the order can match.
+	// Hold what the order could cost at its worst price, commission included
+	// (buy), or the shares (sell), before it can match.
+	var reserved int64
 	if o.Side == book.Buy {
-		ok, err := e.reserveCash(ctx, tx, cmd.UserID, reservePrice*o.Qty)
+		reserved = worst*o.Qty + e.fee(worst*o.Qty)
+		ok, err := e.reserveCash(ctx, tx, cmd.UserID, reserved)
 		if err != nil {
 			return nil, err
 		}
@@ -581,12 +670,13 @@ func (e *Engine) processNew(ctx context.Context, tx *sql.Tx, cmd Command, touche
 		price = sql.NullInt64{Int64: o.Price, Valid: true}
 	}
 	if o.Side == book.Buy {
-		reserve = sql.NullInt64{Int64: reservePrice, Valid: true}
+		reserve = sql.NullInt64{Int64: worst, Valid: true}
 	}
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO orders (user_id, company_id, side, kind, price, qty, reserve_price, status, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'open', $8) RETURNING id`,
-		cmd.UserID, c.id, cmd.Side, cmd.Kind, price, o.Qty, reserve, cmd.Key).Scan(&orderID)
+		INSERT INTO orders (user_id, company_id, side, kind, price, qty, reserve_price, reserved_amount,
+		                    status, time_in_force, idempotency_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', $9, $10) RETURNING id`,
+		cmd.UserID, c.id, cmd.Side, cmd.Kind, price, o.Qty, reserve, reserved, tif, cmd.Key).Scan(&orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -598,18 +688,24 @@ func (e *Engine) processNew(ctx context.Context, tx *sql.Tx, cmd Command, touche
 	if err != nil {
 		return nil, fmt.Errorf("submit after validate: %w", err)
 	}
-	return e.settle(ctx, tx, c, cmd, o, orderID, reservePrice, res)
+	return e.settle(ctx, tx, c, cmd, o, orderID, res)
 }
 
 func (e *Engine) settle(ctx context.Context, tx *sql.Tx, c *company, cmd Command, o book.Order,
-	orderID, reservePrice int64, res book.Result) ([]Event, error) {
+	orderID int64, res book.Result) ([]Event, error) {
 
+	commission, err := e.systemAccount(ctx, tx, "sys_commission")
+	if err != nil {
+		return nil, err
+	}
 	var events []Event
 	var filled int64
 	for _, t := range res.Trades {
 		filled += t.Qty
 		buyer, seller := int64(t.BuyUserID), int64(t.SellUserID)
 		buyOrder, sellOrder := int64(t.BuyOrderID), int64(t.SellOrderID)
+		value := t.Price * t.Qty
+		fee := e.fee(value)
 
 		var tradeID int64
 		err := tx.QueryRowContext(ctx, `
@@ -621,22 +717,30 @@ func (e *Engine) settle(ctx context.Context, tx *sql.Tx, c *company, cmd Command
 			return nil, err
 		}
 
-		// Cash: the buyer's reservation pays the seller. A resting buy order
-		// reserved exactly its own price; an incoming one may have reserved more.
-		buyerReserve := t.Price
-		restingOrder := buyOrder
-		if t.TakerSide == book.Buy {
-			buyerReserve = reservePrice
-			restingOrder = sellOrder
-		}
-		if err := e.transfer(ctx, tx, buyer, "reserved", seller, "cash", t.Price*t.Qty, "trade", tradeID); err != nil {
+		// Cash: the trade value goes from the buyer's held cash to the
+		// seller, and each side pays the commission on that value.
+		if err := e.transfer(ctx, tx, buyer, "reserved", seller, "cash", value, "trade", tradeID); err != nil {
 			return nil, err
 		}
-		if buyerReserve > t.Price {
-			if err := e.transfer(ctx, tx, buyer, "reserved", buyer, "cash",
-				(buyerReserve-t.Price)*t.Qty, "reserve_refund", buyOrder); err != nil {
+		if fee > 0 {
+			buyerHeld, err := e.account(ctx, tx, buyer, "reserved")
+			if err != nil {
 				return nil, err
 			}
+			sellerCash, err := e.account(ctx, tx, seller, "cash")
+			if err != nil {
+				return nil, err
+			}
+			if err := moveMoney(ctx, tx, buyerHeld, commission, fee, "commission", tradeID); err != nil {
+				return nil, err
+			}
+			if err := moveMoney(ctx, tx, sellerCash, commission, fee, "commission", tradeID); err != nil {
+				return nil, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE orders SET reserved_amount = reserved_amount - $1 WHERE id = $2`, value+fee, buyOrder); err != nil {
+			return nil, err
 		}
 
 		// Shares: out of the seller's reserved position, into the buyer's.
@@ -657,21 +761,30 @@ func (e *Engine) settle(ctx context.Context, tx *sql.Tx, c *company, cmd Command
 			ON CONFLICT (user_id, company_id)
 			DO UPDATE SET qty = positions.qty + EXCLUDED.qty,
 			              cost_total = positions.cost_total + EXCLUDED.cost_total`,
-			buyer, c.id, t.Qty, t.Price*t.Qty); err != nil {
+			buyer, c.id, t.Qty, value); err != nil {
 			return nil, err
 		}
 
-		var restStatus string
+		restingOrder := buyOrder
+		if t.TakerSide == book.Buy {
+			restingOrder = sellOrder
+		}
+		var restStatus, restSide string
 		var restFilled, restUser int64
 		err = tx.QueryRowContext(ctx, `
 			UPDATE orders
 			SET filled_qty = filled_qty + $1,
 			    status = CASE WHEN filled_qty + $1 >= qty THEN 'filled' ELSE 'partial' END,
 			    updated_at = now()
-			WHERE id = $2 RETURNING status, filled_qty, user_id`,
-			t.Qty, restingOrder).Scan(&restStatus, &restFilled, &restUser)
+			WHERE id = $2 RETURNING status, filled_qty, user_id, side`,
+			t.Qty, restingOrder).Scan(&restStatus, &restFilled, &restUser, &restSide)
 		if err != nil {
 			return nil, err
+		}
+		if restStatus == "filled" { // give back anything still held for it
+			if err := e.release(ctx, tx, restUser, c.id, restSide, 0, restingOrder); err != nil {
+				return nil, err
+			}
 		}
 
 		if _, err := tx.ExecContext(ctx, `
@@ -701,23 +814,47 @@ func (e *Engine) settle(ctx context.Context, tx *sql.Tx, c *company, cmd Command
 	switch {
 	case filled == o.Qty:
 		status = "filled"
-	case res.Cancelled > 0:
+	case res.Rested == 0:
 		status = "cancelled"
 	case filled > 0:
 		status = "partial"
 	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE orders SET filled_qty = $1, status = $2, updated_at = now() WHERE id = $3`,
-		filled, status, orderID); err != nil {
+	// A market order whose remainder rests carries the price it rests at.
+	var restPrice sql.NullInt64
+	if res.Rested > 0 {
+		restPrice = sql.NullInt64{Int64: res.RestPrice, Valid: true}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE orders SET filled_qty = $1, status = $2, price = COALESCE($3, price), updated_at = now()
+		WHERE id = $4`, filled, status, restPrice, orderID); err != nil {
 		return nil, err
 	}
-	if res.Cancelled > 0 {
-		if err := e.release(ctx, tx, cmd.UserID, c.id, cmd.Side, reservePrice, res.Cancelled, orderID); err != nil {
+	if status == "filled" || status == "cancelled" {
+		if err := e.release(ctx, tx, cmd.UserID, c.id, cmd.Side, res.Cancelled, orderID); err != nil {
 			return nil, err
 		}
 	}
+	// A buy order that stays in the book keeps held only what its remainder
+	// can still cost. Whatever better prices saved comes back at once.
+	if res.Rested > 0 && o.Side == book.Buy {
+		need := res.Rested*res.RestPrice + e.fee(res.Rested*res.RestPrice)
+		var held int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT reserved_amount FROM orders WHERE id = $1 FOR UPDATE`, orderID).Scan(&held); err != nil {
+			return nil, err
+		}
+		if held > need {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE orders SET reserved_amount = $1 WHERE id = $2`, need, orderID); err != nil {
+				return nil, err
+			}
+			if err := e.transfer(ctx, tx, cmd.UserID, "reserved", cmd.UserID, "cash", held-need, "reserve_refund", orderID); err != nil {
+				return nil, err
+			}
+		}
+	}
 	ev := Event{Type: "order", Symbol: c.symbol, UserID: cmd.UserID, OrderID: orderID, Key: cmd.Key,
-		Status: status, FilledQty: filled}
+		Status: status, FilledQty: filled, Price: res.RestPrice}
 	if res.SelfTradeBlocked {
 		ev.Reason = "self_trade_blocked"
 	}
@@ -725,11 +862,11 @@ func (e *Engine) settle(ctx context.Context, tx *sql.Tx, c *company, cmd Command
 }
 
 func (e *Engine) processCancel(ctx context.Context, tx *sql.Tx, cmd Command, touched map[*company]bool) ([]Event, error) {
-	var user, companyID, reserve int64
+	var user, companyID int64
 	var side, status string
 	err := tx.QueryRowContext(ctx, `
-		SELECT user_id, company_id, side, COALESCE(reserve_price, 0), status FROM orders WHERE id = $1`,
-		cmd.OrderID).Scan(&user, &companyID, &side, &reserve, &status)
+		SELECT user_id, company_id, side, status FROM orders WHERE id = $1`,
+		cmd.OrderID).Scan(&user, &companyID, &side, &status)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && user != cmd.UserID) {
 		return []Event{reject(cmd, "unknown_order")}, nil
 	}
@@ -756,26 +893,45 @@ func (e *Engine) processCancel(ctx context.Context, tx *sql.Tx, cmd Command, tou
 		cmd.OrderID).Scan(&filled); err != nil {
 		return nil, err
 	}
-	if err := e.release(ctx, tx, user, c.id, side, reserve, released, cmd.OrderID); err != nil {
+	if err := e.release(ctx, tx, user, c.id, side, released, cmd.OrderID); err != nil {
 		return nil, err
 	}
 	return []Event{{Type: "order", Symbol: c.symbol, UserID: user, OrderID: cmd.OrderID,
 		Status: "cancelled", FilledQty: filled}}, nil
 }
 
-// release gives back what an unfilled quantity was holding.
+// release gives back what an order that has ended was still holding: for a
+// buy, all cash left held for it; for a sell, the unsold shares.
 func (e *Engine) release(ctx context.Context, tx *sql.Tx, user, companyID int64, side string,
-	reservePrice, qty, orderID int64) error {
-	if qty <= 0 {
-		return nil
-	}
+	unsoldQty, orderID int64) error {
 	if side == "buy" {
-		return e.transfer(ctx, tx, user, "reserved", user, "cash", reservePrice*qty, "reserve_release", orderID)
+		var held int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT reserved_amount FROM orders WHERE id = $1 FOR UPDATE`, orderID).Scan(&held); err != nil {
+			return err
+		}
+		if held <= 0 {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE orders SET reserved_amount = 0 WHERE id = $1`, orderID); err != nil {
+			return err
+		}
+		return e.transfer(ctx, tx, user, "reserved", user, "cash", held, "reserve_release", orderID)
+	}
+	if unsoldQty <= 0 {
+		return nil
 	}
 	_, err := tx.ExecContext(ctx, `
 		UPDATE positions SET reserved_qty = reserved_qty - $1 WHERE user_id = $2 AND company_id = $3`,
-		qty, user, companyID)
+		unsoldQty, user, companyID)
 	return err
+}
+
+func (e *Engine) systemAccount(ctx context.Context, tx *sql.Tx, kind string) (int64, error) {
+	var id int64
+	err := tx.QueryRowContext(ctx,
+		`SELECT id FROM ledger_accounts WHERE user_id IS NULL AND kind = $1`, kind).Scan(&id)
+	return id, err
 }
 
 func (e *Engine) account(ctx context.Context, tx *sql.Tx, user int64, kind string) (int64, error) {
