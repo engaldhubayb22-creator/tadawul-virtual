@@ -3,6 +3,7 @@ module github.com/engaldhubayb22-creator/tadawul-virtual/engine
 go 1.24.7
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/lib/pq v1.10.9
 	github.com/redis/go-redis/v9 v9.7.0
 )
