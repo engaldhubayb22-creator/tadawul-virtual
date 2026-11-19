@@ -1,9 +1,17 @@
 // Application state, REST calls and the live feed connection.
 // All prices and amounts from the server are integers in halalas.
 import { reactive } from 'vue'
+import { demoApi, startDemoFeed } from './demo'
+
+// Demo build (VITE_DEMO=1): no server, the market is simulated in the browser.
+export const DEMO = import.meta.env.VITE_DEMO === '1'
+
+// Storage can be missing or blocked (private mode, embedded pages).
+const saved = { get: (k) => { try { return localStorage.getItem(k) } catch { return null } },
+  set: (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v) } catch { /* not kept */ } } }
 
 export const state = reactive({
-  token: localStorage.getItem('token') || '',
+  token: (!DEMO && saved.get('token')) || '',
   user: null,
   balances: { cash: 0, reserved: 0 },
   market: { open: '10:00', close: '22:00', timezone: 'Asia/Riyadh' },
@@ -66,6 +74,7 @@ export function toast(text, kind = 'info') {
 // ---------------------------------------------------------------- REST
 
 export async function api(method, path, body) {
+  if (DEMO) return demoApi(method, path, body)
   const headers = { Accept: 'application/json' }
   if (body) headers['Content-Type'] = 'application/json'
   if (state.token) headers.Authorization = 'Bearer ' + state.token
@@ -203,7 +212,7 @@ export async function authenticate(mode, form) {
   state.token = data.token
   state.user = data.user
   state.balances = data.user.balances
-  localStorage.setItem('token', data.token)
+  if (!DEMO) saved.set('token', data.token)
   state.showAuth = false
   send({ op: 'auth', token: state.token })
   await loadAccount()
@@ -216,7 +225,7 @@ export function logout(callServer = true) {
   state.orders = []
   state.positions = []
   state.financing = null
-  localStorage.removeItem('token')
+  saved.set('token', null)
   if (ws) ws.close() // reconnects as a guest, dropping the private channel
 }
 
@@ -253,6 +262,11 @@ function send(msg) {
 }
 
 export function connect() {
+  if (DEMO) {
+    state.connected = true
+    startDemoFeed({ ticker: onTicker, book: onBook, trade: onTradeMsg, order: onOrder, chat: onChat }, () => state.selected)
+    return
+  }
   const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'
   ws = new WebSocket(url)
   ws.onopen = () => {

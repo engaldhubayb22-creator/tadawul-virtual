@@ -6,7 +6,7 @@ import ChartPanel from './ChartPanel.vue'
 import {
   cancelOrder, connect, loadAccount, loadHolders, loadIpos, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
   loadChat, loadThreads, openThread, repayFinancing, requestFinancing, restoreSession, select, sendChat, setChatRoom,
-  state, subscribeIpo, toast, api,
+  state, subscribeIpo, toast, api, DEMO,
 } from './store'
 
 const rows = computed(() => state.symbols.map((s) => state.companies[s]))
@@ -152,7 +152,7 @@ onMounted(async () => {
 
 <template>
   <header class="top">
-    <div class="brand">تداول الافتراضي <span class="note">أسعار افتراضية لا تمثل السوق الحقيقي</span></div>
+    <div class="brand">تداول الافتراضي <span class="note">{{ DEMO ? 'نسخة تجريبية داخل المتصفح: السوق محاكاة والبيانات تُمسح عند إعادة التحميل' : 'أسعار افتراضية لا تمثل السوق الحقيقي' }}</span></div>
     <div class="status">
       <span class="pill" :class="marketOpen ? 'good' : 'bad'">
         {{ marketOpen ? 'السوق مفتوح' : 'السوق مغلق' }} · {{ state.market.open }}–{{ state.market.close }}
