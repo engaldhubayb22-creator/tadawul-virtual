@@ -70,6 +70,11 @@ func main() {
 	// which is exactly what the two bot accounts receive below. Equity is set
 	// for a price-to-book of about 1.8 to 2.6 and income for a P/E of 14 to 24.
 	const issued, float = int64(50_000_000), int64(11_000_000)
+	// SEED_SAMPLES=0 creates the bot accounts only, for a market that will be
+	// filled from the exchange's figures with `php artisan market:import`.
+	if os.Getenv("SEED_SAMPLES") == "0" {
+		companies = nil
+	}
 	for i, c := range companies {
 		must(tx.Exec(`INSERT INTO sectors (name) VALUES ($1) ON CONFLICT DO NOTHING`, c.sector))
 		must(tx.Exec(`
