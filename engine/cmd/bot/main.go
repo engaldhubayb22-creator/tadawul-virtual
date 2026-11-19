@@ -85,6 +85,7 @@ func main() {
 	}
 
 	mids := map[int64]int64{}
+	cancelled := map[int64]bool{} // cancels already sent, so a slow engine is not flooded
 	ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
 	defer ticker.Stop()
 	log.Printf("bot running, cycle every %d ms", interval)
@@ -94,6 +95,9 @@ func main() {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+		if len(cancelled) > 100000 {
+			cancelled = map[int64]bool{}
 		}
 		syms, err := loadSymbols(ctx, db)
 		if err != nil {
@@ -118,6 +122,9 @@ func main() {
 				mid = hi
 			}
 			mid = mid / s.tick * s.tick
+			if old, seen := mids[s.id]; seen && old == mid {
+				continue // price did not move: keep the current quotes
+			}
 			mids[s.id] = mid
 
 			// Pull the old quotes, then post fresh ones around the new mid.
@@ -130,7 +137,8 @@ func main() {
 			}
 			for rows.Next() {
 				var id int64
-				if rows.Scan(&id) == nil {
+				if rows.Scan(&id) == nil && !cancelled[id] {
+					cancelled[id] = true
 					send(service.Command{Type: "cancel", UserID: mm, OrderID: id})
 				}
 			}

@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -73,6 +74,8 @@ type Engine struct {
 	limitBps  int64
 	day       string
 	DepthSize int
+
+	testHook func(Command) error // tests only: inject a failure after a command
 }
 
 func New(db *sql.DB) *Engine {
@@ -344,20 +347,71 @@ func reason(err error) string {
 	return "invalid"
 }
 
-// Process runs one command and returns the events to publish. A returned
-// error is an infrastructure failure (the command was not applied and can be
-// retried); business rejections come back as an "order" event with a reason.
+// Process runs one command. See ProcessBatch.
 func (e *Engine) Process(ctx context.Context, cmd Command) ([]Event, error) {
+	return e.ProcessBatch(ctx, []Command{cmd})
+}
+
+// ProcessBatch applies the commands in order inside one database transaction
+// and returns the events to publish. Committing many commands at once is what
+// makes the engine fast: the cost of a commit is shared by the whole batch.
+//
+// A returned error is an infrastructure failure: nothing was applied, the
+// affected books were rebuilt from the database, and the commands can be
+// retried. Business rejections come back as an "order" event with a reason.
+func (e *Engine) ProcessBatch(ctx context.Context, cmds []Command) ([]Event, error) {
 	if err := e.ensureDay(ctx); err != nil {
 		return nil, err
 	}
-	switch cmd.Type {
-	case "new":
-		return e.processNew(ctx, cmd)
-	case "cancel":
-		return e.processCancel(ctx, cmd)
+	touched := map[*company]bool{}
+	fail := func(err error) ([]Event, error) {
+		for c := range touched {
+			if rerr := e.reloadBook(ctx, c); rerr != nil {
+				return nil, fmt.Errorf("%w (and reload of %s failed: %v)", err, c.symbol, rerr)
+			}
+		}
+		return nil, err
 	}
-	return []Event{reject(cmd, "unknown_command")}, nil
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var events []Event
+	for _, cmd := range cmds {
+		var evs []Event
+		var err error
+		switch cmd.Type {
+		case "new":
+			evs, err = e.processNew(ctx, tx, cmd, touched)
+		case "cancel":
+			evs, err = e.processCancel(ctx, tx, cmd, touched)
+		default:
+			evs = []Event{reject(cmd, "unknown_command")}
+		}
+		if err == nil && e.testHook != nil {
+			err = e.testHook(cmd)
+		}
+		if err != nil {
+			tx.Rollback()
+			return fail(err)
+		}
+		events = append(events, evs...)
+	}
+	if err := tx.Commit(); err != nil {
+		return fail(err)
+	}
+	// One depth update per symbol that changed, after everything committed.
+	syms := make([]*company, 0, len(touched))
+	for c := range touched {
+		syms = append(syms, c)
+	}
+	sort.Slice(syms, func(i, j int) bool { return syms[i].symbol < syms[j].symbol })
+	for _, c := range syms {
+		events = append(events, e.bookEvent(c))
+	}
+	return events, nil
 }
 
 func reject(cmd Command, why string) Event {
@@ -365,7 +419,7 @@ func reject(cmd Command, why string) Event {
 		Key: cmd.Key, Status: "rejected", Reason: why}
 }
 
-func (e *Engine) processNew(ctx context.Context, cmd Command) ([]Event, error) {
+func (e *Engine) processNew(ctx context.Context, tx *sql.Tx, cmd Command, touched map[*company]bool) ([]Event, error) {
 	c := e.bySy[cmd.Symbol]
 	if c == nil {
 		return []Event{reject(cmd, "unknown_symbol")}, nil
@@ -401,11 +455,15 @@ func (e *Engine) processNew(ctx context.Context, cmd Command) ([]Event, error) {
 		}
 	}
 
-	tx, err := e.db.BeginTx(ctx, nil)
+	var active bool
+	err := tx.QueryRowContext(ctx,
+		`SELECT status = 'active' FROM users WHERE id = $1`, cmd.UserID).Scan(&active)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !active) {
+		return []Event{reject(cmd, "unknown_user")}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
 
 	var existing int64
 	err = tx.QueryRowContext(ctx,
@@ -456,23 +514,13 @@ func (e *Engine) processNew(ctx context.Context, cmd Command) ([]Event, error) {
 	}
 	o.ID = uint64(orderID)
 
+	// From here the book changes: a later failure must rebuild it.
+	touched[c] = true
 	res, err := c.book.Submit(o)
 	if err != nil {
 		return nil, fmt.Errorf("submit after validate: %w", err)
 	}
-	// From here the book has changed: any failure must rebuild it.
-	events, err := e.settle(ctx, tx, c, cmd, o, orderID, reservePrice, res)
-	if err == nil {
-		err = tx.Commit()
-	}
-	if err != nil {
-		tx.Rollback()
-		if rerr := e.reloadBook(ctx, c); rerr != nil {
-			return nil, fmt.Errorf("%w (and book reload failed: %v)", err, rerr)
-		}
-		return nil, err
-	}
-	return append(events, e.bookEvent(c)), nil
+	return e.settle(ctx, tx, c, cmd, o, orderID, reservePrice, res)
 }
 
 func (e *Engine) settle(ctx context.Context, tx *sql.Tx, c *company, cmd Command, o book.Order,
@@ -598,10 +646,10 @@ func (e *Engine) settle(ctx context.Context, tx *sql.Tx, c *company, cmd Command
 	return append(events, ev), nil
 }
 
-func (e *Engine) processCancel(ctx context.Context, cmd Command) ([]Event, error) {
+func (e *Engine) processCancel(ctx context.Context, tx *sql.Tx, cmd Command, touched map[*company]bool) ([]Event, error) {
 	var user, companyID, reserve int64
 	var side, status string
-	err := e.db.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		SELECT user_id, company_id, side, COALESCE(reserve_price, 0), status FROM orders WHERE id = $1`,
 		cmd.OrderID).Scan(&user, &companyID, &side, &reserve, &status)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && user != cmd.UserID) {
@@ -617,44 +665,24 @@ func (e *Engine) processCancel(ctx context.Context, cmd Command) ([]Event, error
 	if c == nil {
 		return []Event{reject(cmd, "unknown_symbol")}, nil
 	}
+	touched[c] = true
 	released, err := c.book.Cancel(uint64(cmd.OrderID))
 	if err != nil {
-		// The database says open but the book does not have it: resync.
-		if rerr := e.reloadBook(ctx, c); rerr != nil {
-			return nil, rerr
-		}
-		if released, err = c.book.Cancel(uint64(cmd.OrderID)); err != nil {
-			return nil, fmt.Errorf("order %d open in database but not in book", cmd.OrderID)
-		}
+		// The database says open but the book does not have it. Failing the
+		// batch rebuilds the book from the database before the retry.
+		return nil, fmt.Errorf("order %d is open in the database but not in the book", cmd.OrderID)
 	}
-
-	fail := func(err error) ([]Event, error) {
-		if rerr := e.reloadBook(ctx, c); rerr != nil {
-			return nil, fmt.Errorf("%w (and book reload failed: %v)", err, rerr)
-		}
-		return nil, err
-	}
-	tx, err := e.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fail(err)
-	}
-	defer tx.Rollback()
 	var filled int64
 	if err := tx.QueryRowContext(ctx, `
 		UPDATE orders SET status = 'cancelled', updated_at = now() WHERE id = $1 RETURNING filled_qty`,
 		cmd.OrderID).Scan(&filled); err != nil {
-		return fail(err)
+		return nil, err
 	}
 	if err := e.release(ctx, tx, user, c.id, side, reserve, released, cmd.OrderID); err != nil {
-		return fail(err)
+		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return fail(err)
-	}
-	return []Event{
-		{Type: "order", Symbol: c.symbol, UserID: user, OrderID: cmd.OrderID, Status: "cancelled", FilledQty: filled},
-		e.bookEvent(c),
-	}, nil
+	return []Event{{Type: "order", Symbol: c.symbol, UserID: user, OrderID: cmd.OrderID,
+		Status: "cancelled", FilledQty: filled}}, nil
 }
 
 // release gives back what an unfilled quantity was holding.

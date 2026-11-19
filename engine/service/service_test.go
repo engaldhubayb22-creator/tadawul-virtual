@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -290,6 +291,7 @@ func TestRejections(t *testing.T) {
 		{"above high limit", Command{UserID: f.buyer, Side: "buy", Kind: "limit", Price: 2971, Qty: 1}, "outside_daily_limits"},
 		{"below low limit", Command{UserID: f.buyer, Side: "buy", Kind: "limit", Price: 2429, Qty: 1}, "outside_daily_limits"},
 		{"unknown symbol", Command{UserID: f.buyer, Symbol: "9999", Side: "buy", Kind: "limit", Price: 2700, Qty: 1}, "unknown_symbol"},
+		{"unknown user", Command{UserID: 9999, Side: "buy", Kind: "limit", Price: 2700, Qty: 1}, "unknown_user"},
 		{"zero qty", Command{UserID: f.buyer, Side: "buy", Kind: "limit", Price: 2700, Qty: 0}, "bad_quantity"},
 		{"bad kind", Command{UserID: f.buyer, Side: "buy", Kind: "stop", Price: 2700, Qty: 1}, "bad_kind"},
 	}
@@ -381,6 +383,98 @@ func TestNewDayExpiresOrdersAndMovesLimits(t *testing.T) {
 	}
 	if r := f.int(`SELECT reserved_qty FROM positions WHERE user_id = $1`, f.seller); r != 0 {
 		t.Errorf("seller reserved shares = %d", r)
+	}
+	f.checkLedger()
+}
+
+func TestBatchCommitsTogether(t *testing.T) {
+	f := setup(t)
+	ev, err := f.e.ProcessBatch(context.Background(), []Command{
+		{Type: "new", UserID: f.seller, Symbol: "2222", Side: "sell", Kind: "limit", Price: 2700, Qty: 100, Key: "a"},
+		{Type: "new", UserID: f.buyer, Symbol: "2222", Side: "buy", Kind: "limit", Price: 2700, Qty: 30, Key: "b"},
+		{Type: "new", UserID: f.buyer, Symbol: "2222", Side: "buy", Kind: "limit", Price: 2700, Qty: 30, Key: "b"}, // duplicate
+		{Type: "new", UserID: f.buyer, Symbol: "2222", Side: "buy", Kind: "limit", Price: 2600, Qty: 10, Key: "c"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The resting bid (key c) is cancelled in a second batch by its id.
+	var bid int64
+	books := 0
+	for _, e := range ev {
+		if e.Key == "c" {
+			bid = e.OrderID
+		}
+		if e.Type == "book" {
+			books++
+		}
+	}
+	if books != 1 {
+		t.Errorf("want one book event per touched symbol, got %d", books)
+	}
+	if _, err := f.e.ProcessBatch(context.Background(), []Command{
+		{Type: "cancel", UserID: f.buyer, OrderID: bid},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.int(`SELECT count(*) FROM orders`); n != 3 {
+		t.Errorf("orders = %d, want 3 (duplicate ignored)", n)
+	}
+	if n := f.int(`SELECT count(*) FROM trades`); n != 1 {
+		t.Errorf("trades = %d", n)
+	}
+	if got := f.balance(f.buyer, "cash"); got != startCash-30*2700 {
+		t.Errorf("buyer cash = %d", got)
+	}
+	if got := f.balance(f.buyer, "reserved"); got != 0 {
+		t.Errorf("buyer reserved = %d", got)
+	}
+	snap, _ := f.e.Snapshot("2222")
+	if len(snap.Bids) != 0 || len(snap.Asks) != 1 || snap.Asks[0].Qty != 70 {
+		t.Errorf("book = %+v", snap)
+	}
+	f.checkLedger()
+}
+
+func TestFailedBatchChangesNothing(t *testing.T) {
+	f := setup(t)
+	f.send(Command{UserID: f.seller, Side: "sell", Kind: "limit", Price: 2700, Qty: 100})
+
+	boom := errors.New("injected failure")
+	f.e.testHook = func(c Command) error {
+		if c.Key == "second" {
+			return boom
+		}
+		return nil
+	}
+	_, err := f.e.ProcessBatch(context.Background(), []Command{
+		{Type: "new", UserID: f.buyer, Symbol: "2222", Side: "buy", Kind: "limit", Price: 2700, Qty: 40, Key: "first"},
+		{Type: "new", UserID: f.buyer, Symbol: "2222", Side: "buy", Kind: "limit", Price: 2650, Qty: 5, Key: "second"},
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v", err)
+	}
+	f.e.testHook = nil
+
+	// Nothing from the failed batch is in the database...
+	if n := f.int(`SELECT count(*) FROM trades`); n != 0 {
+		t.Errorf("trades = %d", n)
+	}
+	if n := f.int(`SELECT count(*) FROM orders`); n != 1 {
+		t.Errorf("orders = %d", n)
+	}
+	if f.balance(f.buyer, "cash") != startCash || f.balance(f.buyer, "reserved") != 0 {
+		t.Errorf("failed batch moved money")
+	}
+	// ...and the in-memory book was rebuilt to match: the full 100 is back.
+	snap, _ := f.e.Snapshot("2222")
+	if len(snap.Asks) != 1 || snap.Asks[0].Qty != 100 || len(snap.Bids) != 0 {
+		t.Fatalf("book after failed batch = %+v", snap)
+	}
+	// The same commands then apply cleanly.
+	ev := f.send(Command{UserID: f.buyer, Side: "buy", Kind: "limit", Price: 2700, Qty: 40, Key: "first"})
+	if got := orderEvent(t, ev, f.buyer); got.Status != "filled" {
+		t.Fatalf("retry: %+v", got)
 	}
 	f.checkLedger()
 }

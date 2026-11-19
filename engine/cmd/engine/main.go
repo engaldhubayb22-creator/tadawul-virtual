@@ -3,6 +3,7 @@
 //
 //	orders:in      stream of commands   (field "data" = JSON service.Command)
 //	market:events  stream of events     (field "data" = JSON service.Event)
+//	orders:dead    commands that kept failing, with the error
 package main
 
 import (
@@ -27,6 +28,9 @@ const (
 	outStream = "market:events"
 	group     = "engine"
 	consumer  = "engine-1"
+
+	deadStream  = "orders:dead"
+	maxAttempts = 5
 )
 
 func env(key, def string) string {
@@ -79,7 +83,7 @@ func main() {
 	for ctx.Err() == nil {
 		res, err := rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group: group, Consumer: consumer,
-			Streams: []string{inStream, cursor}, Count: 200, Block: time.Second,
+			Streams: []string{inStream, cursor}, Count: 500, Block: time.Second,
 		}).Result()
 		if err == redis.Nil {
 			continue
@@ -93,10 +97,8 @@ func main() {
 		}
 		n := 0
 		for _, st := range res {
-			for _, msg := range st.Messages {
-				n++
-				handle(ctx, rdb, eng, msg)
-			}
+			n += len(st.Messages)
+			handleBatch(ctx, rdb, eng, st.Messages)
 		}
 		if cursor == "0" && n == 0 {
 			cursor = ">"
@@ -105,19 +107,51 @@ func main() {
 	log.Print("engine stopped")
 }
 
-func handle(ctx context.Context, rdb *redis.Client, eng *service.Engine, msg redis.XMessage) {
-	raw, _ := msg.Values["data"].(string)
-	var cmd service.Command
-	if err := json.Unmarshal([]byte(raw), &cmd); err != nil {
-		log.Printf("skip malformed command %s: %v", msg.ID, err)
-		rdb.XAck(ctx, inStream, group, msg.ID)
+// handleBatch applies everything that was waiting in the queue in a single
+// transaction. If the batch fails it falls back to one command at a time, so
+// a single bad command cannot hold back the rest.
+func handleBatch(ctx context.Context, rdb *redis.Client, eng *service.Engine, msgs []redis.XMessage) {
+	cmds := make([]service.Command, 0, len(msgs))
+	valid := make([]redis.XMessage, 0, len(msgs))
+	ids := make([]string, 0, len(msgs))
+	for _, msg := range msgs {
+		raw, _ := msg.Values["data"].(string)
+		var cmd service.Command
+		if err := json.Unmarshal([]byte(raw), &cmd); err != nil {
+			log.Printf("skip malformed command %s: %v", msg.ID, err)
+			rdb.XAck(ctx, inStream, group, msg.ID)
+			continue
+		}
+		cmds = append(cmds, cmd)
+		valid = append(valid, msg)
+		ids = append(ids, msg.ID)
+	}
+	if len(cmds) == 0 {
 		return
 	}
-	// Commands must be applied in order, so a failing one blocks the queue
-	// and is retried until the database is reachable again. Duplicate
-	// delivery is safe: the idempotency key makes a repeat a no-op.
-	for {
-		events, err := eng.Process(ctx, cmd)
+	events, err := eng.ProcessBatch(ctx, cmds)
+	if err == nil {
+		publish(ctx, rdb, events)
+		rdb.XAck(ctx, inStream, group, ids...)
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	log.Printf("batch of %d failed, applying one by one: %v", len(cmds), err)
+	for i, cmd := range cmds {
+		handleOne(ctx, rdb, eng, valid[i], cmd)
+	}
+}
+
+// handleOne retries a command a few times, then parks it on the dead-letter
+// stream so the queue keeps moving. Duplicate delivery is safe: the
+// idempotency key makes a repeat a no-op.
+func handleOne(ctx context.Context, rdb *redis.Client, eng *service.Engine, msg redis.XMessage, cmd service.Command) {
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		var events []service.Event
+		events, err = eng.Process(ctx, cmd)
 		if err == nil {
 			publish(ctx, rdb, events)
 			rdb.XAck(ctx, inStream, group, msg.ID)
@@ -126,9 +160,13 @@ func handle(ctx context.Context, rdb *redis.Client, eng *service.Engine, msg red
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("command %s failed, retrying: %v", msg.ID, err)
-		time.Sleep(time.Second)
+		log.Printf("command %s attempt %d failed: %v", msg.ID, attempt, err)
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 	}
+	log.Printf("command %s moved to %s after %d attempts", msg.ID, deadStream, maxAttempts)
+	rdb.XAdd(ctx, &redis.XAddArgs{Stream: deadStream, Values: map[string]any{
+		"data": msg.Values["data"], "error": err.Error(), "source_id": msg.ID}})
+	rdb.XAck(ctx, inStream, group, msg.ID)
 }
 
 func publish(ctx context.Context, rdb *redis.Client, events []service.Event) {
