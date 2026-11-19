@@ -1,0 +1,8 @@
+.git
+**/node_modules
+**/vendor
+web/dist
+api/.env
+api/storage/logs/*
+api/storage/framework/cache/data/*
+deploy/.env

@@ -33,6 +33,10 @@ go test ./...
 go test ./book -run xxx -bench .
 ```
 
+## النشر على خادم
+
+التعليمات في [`deploy/README.md`](deploy/README.md): أمر واحد يشغّل كل الخدمات عبر Docker Compose.
+
 ## التشغيل محليًا
 
 ```bash
