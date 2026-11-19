@@ -230,3 +230,26 @@ func TestUnsubscribeAndBadChannels(t *testing.T) {
 	h.Dispatch(service.Event{Type: "trade", Symbol: "2222", Price: 2700, Qty: 1, TakerSide: "buy"})
 	expectNothing(t, c)
 }
+
+func TestChatMessagesReachTheRoomOnly(t *testing.T) {
+	h, srv := setup(t)
+	in, out := dial(t, srv), dial(t, srv)
+	in.WriteJSON(map[string]any{"op": "sub", "ch": []string{"chat:general"}})
+	out.WriteJSON(map[string]any{"op": "sub", "ch": []string{"chat:2222"}})
+	waitSubs(t, h, 2)
+
+	h.Dispatch(service.Event{Type: "chat", Room: "general", ID: 5, Alias: "trader1", Text: "مرحبا"})
+	m := read(t, in)
+	var c chatMsg
+	json.Unmarshal(m.Data, &c)
+	if m.Ch != "chat:general" || c.ID != 5 || c.Alias != "trader1" || c.Text != "مرحبا" || c.Deleted {
+		t.Fatalf("chat = %+v %s", m, m.Data)
+	}
+	h.Dispatch(service.Event{Type: "chat_delete", Room: "general", ID: 5})
+	m = read(t, in)
+	json.Unmarshal(m.Data, &c)
+	if c.ID != 5 || !c.Deleted {
+		t.Fatalf("delete = %s", m.Data)
+	}
+	expectNothing(t, out)
+}

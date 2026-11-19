@@ -13,6 +13,7 @@
 //	ticker         last price of every symbol that traded, batched every 250 ms
 //	book:<symbol>  full top-of-book depth, sent whole on every change and on subscribe
 //	trades:<symbol> one message per trade
+//	chat:<room>    chat messages; room is "general" or a symbol
 //	user:<id>      the signed-in user's own order updates (joined automatically on auth)
 //
 // A depth message is always the complete picture, so a client that misses one
@@ -70,6 +71,14 @@ type orderMsg struct {
 	Status    string `json:"status"`
 	Reason    string `json:"reason,omitempty"`
 	FilledQty int64  `json:"filled_qty"`
+}
+
+type chatMsg struct {
+	ID      int64  `json:"id"`
+	Alias   string `json:"alias,omitempty"`
+	Text    string `json:"text,omitempty"`
+	Deleted bool   `json:"deleted,omitempty"`
+	At      int64  `json:"at"`
 }
 
 type envelope struct {
@@ -144,6 +153,13 @@ func (h *Hub) Dispatch(ev service.Event) {
 		}
 		t.Last, t.Side = ev.Price, ev.TakerSide
 		t.Qty += ev.Qty
+	case "chat", "chat_delete":
+		if ev.Room == "" {
+			return
+		}
+		ch := "chat:" + ev.Room
+		h.broadcast(ch, encode(ch, chatMsg{ID: ev.ID, Alias: ev.Alias, Text: ev.Text,
+			Deleted: ev.Type == "chat_delete", At: h.Now().UnixMilli()}))
 	case "order":
 		if ev.UserID <= 0 {
 			return
@@ -215,7 +231,7 @@ func publicChannel(ch string) bool {
 	if ch == "ticker" {
 		return true
 	}
-	for _, p := range []string{"book:", "trades:"} {
+	for _, p := range []string{"book:", "trades:", "chat:"} {
 		if strings.HasPrefix(ch, p) && len(ch) > len(p) && len(ch) <= len(p)+12 {
 			return true
 		}

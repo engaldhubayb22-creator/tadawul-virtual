@@ -1,16 +1,18 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import AdminPanel from './AdminPanel.vue'
 import AuthModal from './AuthModal.vue'
 import ChartPanel from './ChartPanel.vue'
 import {
   cancelOrder, connect, loadAccount, loadHolders, loadIpos, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
-  repayFinancing, requestFinancing, restoreSession, select, state, subscribeIpo, toast,
+  loadChat, loadThreads, openThread, repayFinancing, requestFinancing, restoreSession, select, sendChat, setChatRoom,
+  state, subscribeIpo, toast, api,
 } from './store'
 
 const rows = computed(() => state.symbols.map((s) => state.companies[s]))
 const current = computed(() => state.companies[state.selected] || null)
 const tab = ref('orders')
+const forumSymbol = ref(false) // forum filter: false = all threads, true = only the selected company
 const view = ref('trade') // 'trade' or 'admin'
 const isAdmin = computed(() => state.user?.role === 'admin')
 watch(isAdmin, (a) => { if (!a) view.value = 'trade' })
@@ -68,12 +70,15 @@ const maxDepth = computed(() => Math.max(1, ...state.book.bids.map((l) => l.qty)
 const asksTopDown = computed(() => [...state.book.asks].reverse())
 const time = (ms) => new Date(ms).toLocaleTimeString('en-GB', { timeZone: state.market.timezone })
 
+const reloadThreads = () => loadThreads(forumSymbol.value ? state.selected : '').catch(() => {})
+
 // ---- news, whales and top holders: refreshed on a slow timer while visible
 function refreshTab() {
   // Allocations and refunds change the account without any order event, so
   // the account tabs reload on their own too.
   if (state.token && ['orders', 'positions', 'ipos', 'financing'].includes(tab.value)) loadAccount().catch(() => {})
   if (tab.value === 'whales') loadWhales().catch(() => {})
+  if (tab.value === 'forum' && !state.thread) reloadThreads()
   if (tab.value === 'ipos') {
     loadIpos().catch(() => {})
     // A listed IPO adds a company to the market: pick it up.
@@ -81,9 +86,39 @@ function refreshTab() {
   }
   if (tab.value === 'holders' && state.selected) loadHolders(state.selected).catch(() => {})
 }
-watch([tab, () => state.selected], refreshTab)
+watch([tab, () => state.selected, forumSymbol], refreshTab)
 setInterval(refreshTab, 10000)
 setInterval(() => loadNews().catch(() => {}), 30000)
+// ---- chat
+const side = ref('tape') // bottom-left panel: 'tape' or 'chat'
+const chatText = ref('')
+const chatBox = ref(null)
+watch(() => state.chat.length, async () => { await nextTick(); if (chatBox.value) chatBox.value.scrollTop = chatBox.value.scrollHeight })
+async function say() {
+  const text = chatText.value.trim()
+  if (!text) return
+  try { await sendChat(text); if (state.token) chatText.value = '' } catch (e) { toast(e.message, 'bad') }
+}
+
+// ---- forum
+const draft = reactive({ title: '', body: '', here: true, reply: '' })
+async function postThread() {
+  if (!state.token) { state.showAuth = true; return }
+  try {
+    const r = await api('POST', '/forum', { title: draft.title, body: draft.body, symbol: draft.here ? state.selected : null })
+    draft.title = ''; draft.body = ''
+    await openThread(r.id)
+  } catch (e) { toast(e.message, 'bad') }
+}
+async function postReply() {
+  if (!state.token) { state.showAuth = true; return }
+  try {
+    await api('POST', `/forum/${state.thread.thread.id}/posts`, { body: draft.reply })
+    draft.reply = ''
+    await openThread(state.thread.thread.id)
+  } catch (e) { toast(e.message, 'bad') }
+}
+
 const finAmount = ref('')
 const fin = computed(() => state.financing)
 async function borrow() {
@@ -108,6 +143,7 @@ const latestNews = computed(() => state.news.slice(0, 6))
 
 onMounted(async () => {
   loadNews().catch(() => {})
+  loadChat().catch(() => {})
   connect()
   try { await loadMarket() } catch (e) { toast(e.message, 'bad') }
   restoreSession()
@@ -209,10 +245,17 @@ onMounted(async () => {
       </form>
     </section>
 
-    <!-- tape -->
+    <!-- tape and chat -->
     <section class="panel tape">
-      <h2>الصفقات</h2>
-      <div class="rows">
+      <div class="tabs">
+        <button :class="{ on: side === 'tape' }" @click="side = 'tape'">الصفقات</button>
+        <button :class="{ on: side === 'chat' }" @click="side = 'chat'">الشات</button>
+        <template v-if="side === 'chat'">
+          <button class="room" :class="{ on: state.chatRoom === 'general' }" @click="setChatRoom('general')">عام</button>
+          <button class="room" :class="{ on: state.chatRoom === 'symbol' }" @click="setChatRoom('symbol')">{{ current?.name || 'السهم' }}</button>
+        </template>
+      </div>
+      <div v-if="side === 'tape'" class="rows">
         <div v-for="(t, i) in state.trades" :key="t.at + '-' + i" class="trow">
           <span class="num" :class="t.side === 'buy' ? 'up' : 'down'">{{ money(t.price) }}</span>
           <span class="num">{{ qty(t.qty) }}</span>
@@ -220,6 +263,16 @@ onMounted(async () => {
         </div>
         <p v-if="!state.trades.length" class="empty">لا توجد صفقات بعد</p>
       </div>
+      <template v-else>
+        <div ref="chatBox" class="rows chat">
+          <p v-for="m in state.chat" :key="m.id" class="msg"><b>{{ m.alias }}</b> {{ m.text }}</p>
+          <p v-if="!state.chat.length" class="empty">لا توجد رسائل بعد</p>
+        </div>
+        <form class="say" @submit.prevent="say">
+          <input v-model="chatText" maxlength="300" :placeholder="state.user ? 'اكتب رسالة…' : 'سجّل الدخول للمشاركة'" />
+          <button class="primary small">إرسال</button>
+        </form>
+      </template>
     </section>
 
     <!-- account -->
@@ -231,6 +284,7 @@ onMounted(async () => {
         <button :class="{ on: tab === 'holders' }" @click="tab = 'holders'">كبار الملاك</button>
         <button :class="{ on: tab === 'ipos' }" @click="tab = 'ipos'">الاكتتابات</button>
         <button :class="{ on: tab === 'financing' }" @click="tab = 'financing'">التمويل</button>
+        <button :class="{ on: tab === 'forum' }" @click="tab = 'forum'">المنتدى</button>
         <span v-if="state.user" class="worth">صافي الثروة <b class="num">{{ money(state.netWorth) }}</b>
           · محجوز <span class="num">{{ money(state.balances.reserved) }}</span></span>
       </div>
@@ -245,6 +299,38 @@ onMounted(async () => {
           <tr v-if="!state.whales.length"><td colspan="6" class="empty">لا يوجد متداولون بعد</td></tr>
         </tbody>
       </table>
+      <div v-else-if="tab === 'forum'" class="forum">
+        <template v-if="state.thread">
+          <button class="ghost" @click="openThread(null); reloadThreads()">→ كل المواضيع</button>
+          <h3>{{ state.thread.thread.title }} <small class="muted">{{ state.thread.thread.alias }}<template v-if="state.thread.thread.company"> · {{ state.thread.thread.company }}</template></small></h3>
+          <p class="post">{{ state.thread.thread.body }}</p>
+          <p v-for="p in state.thread.posts" :key="p.id" class="post reply"><b>{{ p.alias }}</b> {{ p.body }}</p>
+          <form class="row" @submit.prevent="postReply">
+            <label class="grow">ردّك<input v-model="draft.reply" required maxlength="10000" /></label>
+            <button class="primary small">إرسال الرد</button>
+          </form>
+        </template>
+        <template v-else>
+          <div class="row">
+            <label class="check"><input v-model="forumSymbol" type="checkbox" /> مواضيع {{ current?.name }} فقط</label>
+          </div>
+          <table>
+            <tbody>
+              <tr v-for="t in state.threads" :key="t.id" @click="openThread(t.id)">
+                <td><b>{{ t.title }}</b><small>{{ t.alias }}<template v-if="t.company"> · {{ t.company }}</template></small></td>
+                <td class="num muted">{{ t.reply_count }} رد</td>
+              </tr>
+              <tr v-if="!state.threads.length"><td colspan="2" class="empty">لا توجد مواضيع بعد. اكتب أول تحليل.</td></tr>
+            </tbody>
+          </table>
+          <form class="row" @submit.prevent="postThread">
+            <label>العنوان<input v-model="draft.title" required minlength="3" maxlength="150" /></label>
+            <label class="grow">التحليل<input v-model="draft.body" required maxlength="10000" /></label>
+            <label class="check"><input v-model="draft.here" type="checkbox" /> عن {{ current?.name }}</label>
+            <button class="primary small">نشر</button>
+          </form>
+        </template>
+      </div>
       <div v-else-if="tab === 'financing'" class="fin">
         <p v-if="!state.user" class="empty">سجّل الدخول لطلب تمويل.</p>
         <template v-else-if="fin">

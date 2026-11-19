@@ -51,6 +51,13 @@ type Event struct {
 	Last      int64            `json:"last,omitempty"`
 	Bids      []book.LevelView `json:"bids,omitempty"`
 	Asks      []book.LevelView `json:"asks,omitempty"`
+
+	// Chat messages travel on the same stream; the API publishes them and
+	// the engine never does. Type is "chat" or "chat_delete".
+	ID    int64  `json:"id,omitempty"`
+	Room  string `json:"room,omitempty"`
+	Alias string `json:"alias,omitempty"`
+	Text  string `json:"text,omitempty"`
 }
 
 type company struct {

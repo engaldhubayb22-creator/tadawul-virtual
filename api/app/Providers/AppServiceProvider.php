@@ -24,6 +24,10 @@ class AppServiceProvider extends ServiceProvider
     {
         // Order entry and cancels: fast enough for one-click trading, slow
         // enough that one account cannot flood the book.
+        // Chat: a message every few seconds is conversation, more is flooding.
+        RateLimiter::for('chat', fn (Request $request) => Limit::perMinute(20)->by('chat:'.$request->user()?->id));
+        RateLimiter::for('forum', fn (Request $request) => Limit::perMinute(6)->by('forum:'.$request->user()?->id));
+
         RateLimiter::for('orders', fn (Request $request) => [
             Limit::perSecond(20)->by('orders-s:'.$request->user()?->id),
             Limit::perMinute(600)->by('orders-m:'.$request->user()?->id),

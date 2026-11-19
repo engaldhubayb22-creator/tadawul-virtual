@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CommunityController;
 use App\Http\Controllers\Api\FinancingController;
 use App\Http\Controllers\Api\IpoController;
 use App\Http\Controllers\Api\MarketController;
@@ -20,6 +21,9 @@ Route::prefix('v1')->group(function () {
     Route::get('news', [MarketController::class, 'news']);
     Route::get('leaderboard', [MarketController::class, 'leaderboard']);
     Route::get('ipos', [IpoController::class, 'index']);
+    Route::get('chat/{room}', [CommunityController::class, 'chatHistory']);
+    Route::get('forum', [CommunityController::class, 'threads']);
+    Route::get('forum/{id}', [CommunityController::class, 'thread']);
     Route::get('market/{symbol}/holders', [MarketController::class, 'holders']);
     Route::get('market/{symbol}/depth', [MarketController::class, 'depth']);
     Route::get('market/{symbol}/trades', [MarketController::class, 'trades']);
@@ -30,6 +34,12 @@ Route::prefix('v1')->group(function () {
         Route::get('me', [AuthController::class, 'me']);
         Route::get('portfolio', [OrderController::class, 'portfolio']);
         Route::post('ipos/{id}/subscribe', [IpoController::class, 'subscribe']);
+        Route::post('chat/{room}', [CommunityController::class, 'chatSend'])->middleware('throttle:chat');
+        Route::delete('chat/messages/{id}', [CommunityController::class, 'chatDelete']);
+        Route::put('chat/mute/{alias}', [CommunityController::class, 'mute']);
+        Route::post('forum', [CommunityController::class, 'createThread'])->middleware('throttle:forum');
+        Route::post('forum/{id}/posts', [CommunityController::class, 'reply'])->middleware('throttle:forum');
+        Route::delete('forum/{id}', [CommunityController::class, 'deleteThread']);
         Route::get('financing', [FinancingController::class, 'show']);
         Route::post('financing', [FinancingController::class, 'store']);
         Route::post('financing/repay', [FinancingController::class, 'repay']);

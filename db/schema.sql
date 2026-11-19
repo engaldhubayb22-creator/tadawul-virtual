@@ -316,3 +316,46 @@ INSERT INTO settings (key, value) VALUES
     ('financing_days',          '30'),
     ('margin_call_bps',         '3000'),    -- warn when equity falls to 30% of assets
     ('liquidation_bps',         '2000');    -- sell out when it falls to 20%
+
+-- ---------------------------------------------------------------------------
+-- Chat and forum
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE users ADD COLUMN chat_muted_until TIMESTAMPTZ;
+
+-- room is 'general' or a company symbol.
+CREATE TABLE chat_messages (
+    id         BIGSERIAL PRIMARY KEY,
+    room       TEXT        NOT NULL,
+    user_id    BIGINT      NOT NULL REFERENCES users (id),
+    body       TEXT        NOT NULL CHECK (char_length(body) BETWEEN 1 AND 300),
+    deleted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX chat_messages_room ON chat_messages (room, id DESC);
+
+CREATE TABLE forum_threads (
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      BIGINT      NOT NULL REFERENCES users (id),
+    company_id   BIGINT REFERENCES companies (id),       -- NULL: general discussion
+    title        TEXT        NOT NULL CHECK (char_length(title) BETWEEN 3 AND 150),
+    body         TEXT        NOT NULL CHECK (char_length(body) BETWEEN 1 AND 10000),
+    reply_count  INT         NOT NULL DEFAULT 0,
+    last_post_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at   TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX forum_threads_recent ON forum_threads (last_post_at DESC) WHERE deleted_at IS NULL;
+
+CREATE TABLE forum_posts (
+    id         BIGSERIAL PRIMARY KEY,
+    thread_id  BIGINT      NOT NULL REFERENCES forum_threads (id),
+    user_id    BIGINT      NOT NULL REFERENCES users (id),
+    body       TEXT        NOT NULL CHECK (char_length(body) BETWEEN 1 AND 10000),
+    deleted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX forum_posts_thread ON forum_posts (thread_id, id);

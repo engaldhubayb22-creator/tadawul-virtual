@@ -16,6 +16,10 @@ export const state = reactive({
   positions: [],
   netWorth: 0,
   news: [],
+  chatRoom: 'general', // 'general' or 'symbol' (the selected company's room)
+  chat: [],
+  threads: [],
+  thread: null,
   financing: null,
   ipos: [],
   whales: [],
@@ -106,6 +110,42 @@ export async function loadSymbol(symbol) {
   state.trades = t.trades.map((x) => ({ price: x.price, qty: x.qty, side: x.taker_side, at: Date.parse(isoTime(x.executed_at)) }))
 }
 
+// ---------------------------------------------------------------- chat and forum
+
+export const chatRoomName = () => (state.chatRoom === 'general' ? 'general' : state.selected)
+
+export async function loadChat() {
+  const room = chatRoomName()
+  if (!room) return
+  const data = await api('GET', '/chat/' + room)
+  if (room !== chatRoomName()) return
+  state.chat = data.messages.map((m) => ({ id: m.id, alias: m.alias, text: m.text }))
+}
+
+export function setChatRoom(kind) {
+  const old = chatRoomName()
+  state.chatRoom = kind
+  const now = chatRoomName()
+  if (old === now) return
+  state.chat = []
+  if (old) send({ op: 'unsub', ch: ['chat:' + old] })
+  if (now) send({ op: 'sub', ch: ['chat:' + now] })
+  loadChat().catch(() => {})
+}
+
+export async function sendChat(text) {
+  if (!state.token) { state.showAuth = true; return }
+  await api('POST', '/chat/' + chatRoomName(), { text })
+}
+
+export async function loadThreads(symbol) {
+  state.threads = (await api('GET', '/forum' + (symbol ? '?symbol=' + symbol : ''))).threads
+}
+
+export async function openThread(id) {
+  state.thread = id == null ? null : await api('GET', '/forum/' + id)
+}
+
 export async function loadFinancing() {
   if (state.token) state.financing = await api('GET', '/financing')
 }
@@ -151,8 +191,10 @@ export function select(symbol) {
   state.selected = symbol
   state.book = { bids: [], asks: [], last: 0 }
   state.trades = []
-  if (old) send({ op: 'unsub', ch: ['book:' + old, 'trades:' + old] })
-  send({ op: 'sub', ch: ['book:' + symbol, 'trades:' + symbol] })
+  const mine = state.chatRoom === 'symbol'
+  if (old) send({ op: 'unsub', ch: ['book:' + old, 'trades:' + old].concat(mine ? ['chat:' + old] : []) })
+  send({ op: 'sub', ch: ['book:' + symbol, 'trades:' + symbol].concat(mine ? ['chat:' + symbol] : []) })
+  if (mine) { state.chat = []; loadChat().catch(() => {}) }
   loadSymbol(symbol).catch(() => {})
 }
 
@@ -220,6 +262,7 @@ export function connect() {
     if (state.token) send({ op: 'auth', token: state.token })
     const ch = ['ticker']
     if (state.selected) ch.push('book:' + state.selected, 'trades:' + state.selected)
+    if (chatRoomName()) ch.push('chat:' + chatRoomName())
     send({ op: 'sub', ch })
     // After a drop, reload the snapshots: ticks sent while offline are gone.
     if (wasDown) { loadMarket().catch(() => {}); loadAccount().catch(() => {}); if (state.selected) loadSymbol(state.selected).catch(() => {}) }
@@ -237,6 +280,7 @@ export function connect() {
     if (m.ch.startsWith('book:')) return onBook(m.data)
     if (m.ch.startsWith('trades:')) return onTradeMsg(m.data)
     if (m.ch.startsWith('user:')) return onOrder(m.data)
+    if (m.ch.startsWith('chat:')) return onChat(m.ch.slice(5), m.data)
   }
 }
 
@@ -267,6 +311,18 @@ function onTradeMsg(t) {
   state.trades.unshift({ price: t.price, qty: t.qty, side: t.taker_side, at: t.at })
   if (state.trades.length > 60) state.trades.length = 60
   tradeListeners.forEach((fn) => fn(t))
+}
+
+function onChat(room, m) {
+  if (room !== chatRoomName()) return
+  if (m.deleted) {
+    const i = state.chat.findIndex((x) => x.id === m.id)
+    if (i >= 0) state.chat.splice(i, 1)
+    return
+  }
+  if (state.chat.some((x) => x.id === m.id)) return
+  state.chat.push({ id: m.id, alias: m.alias, text: m.text })
+  if (state.chat.length > 150) state.chat.splice(0, state.chat.length - 150)
 }
 
 function onOrder(o) {

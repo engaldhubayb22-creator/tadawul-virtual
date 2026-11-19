@@ -37,7 +37,7 @@ label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
   grid-template-areas: "list main side" "tape account side"; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .list { grid-area: list; overflow-y: auto; } .main { grid-area: main; } .side { grid-area: side; overflow-y: auto; }
-.tape { grid-area: tape; } .account { grid-area: account; overflow-y: auto; }
+.tape { grid-area: tape; } .tape .rows { flex: 1; min-height: 0; } .account { grid-area: account; overflow-y: auto; }
 
 table { width: 100%; border-collapse: collapse; }
 th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 400; font-size: 12px; text-align: start; padding: 8px 10px; border-bottom: 1px solid var(--line); }
@@ -108,6 +108,17 @@ td small.tag { display: inline; border: 1px solid var(--line); border-radius: 4p
 .fin { padding: 12px 14px; display: grid; gap: 12px; }
 .fin .terms { margin: 0; font-size: 13px; } .fin .row b { margin-inline-start: 4px; }
 .marginbar { background: var(--down); color: #fff; padding: 6px 14px; font-weight: 600; }
+
+.tape .tabs .room { font-size: 12px; padding: 2px 8px; }
+.tape .tabs .room:first-of-type { margin-inline-start: auto; }
+.chat { flex: 1; padding: 6px 12px; }
+.msg { margin: 0 0 4px; overflow-wrap: anywhere; } .msg b { color: var(--accent); margin-inline-end: 6px; font-weight: 600; }
+.say { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
+.forum { padding: 10px 14px; display: grid; gap: 10px; }
+.forum h3 { margin: 0; font-size: 15px; } .forum h3 small { font-weight: 400; margin-inline-start: 8px; }
+.post { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.post.reply { border-inline-start: 2px solid var(--line); padding-inline-start: 10px; } .post.reply b { color: var(--accent); margin-inline-end: 6px; }
+.forum .ghost { justify-self: start; }
 
 .admin { flex: 1; min-height: 0; padding: 8px; display: grid; gap: 8px; align-content: start; overflow-y: auto; }
 .admin .panel { overflow: visible; }
