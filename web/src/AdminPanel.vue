@@ -8,6 +8,25 @@ const data = ref(null)
 const settings = reactive({})
 const edits = reactive({}) // per symbol: fields being edited
 const news = reactive({ symbol: '', title: '', impact: 0, minutes: 15 })
+const ipo = reactive({ symbol: '', name: '', sector: '', price: '', tick: 0.01, offered: 100000, maker: 500000, min: 10, max: 5000, minutes: 60 })
+const ipos = ref([])
+const loadIpos = async () => { try { ipos.value = (await api('GET', '/ipos')).ipos } catch { /* shown on next refresh */ } }
+async function createIpo() {
+  try {
+    await api('POST', '/admin/ipos', { symbol: ipo.symbol, name: ipo.name, sector: ipo.sector || null,
+      price: Math.round(Number(ipo.price) * 100), tick_size: Math.round(Number(ipo.tick) * 100),
+      shares_offered: ipo.offered, maker_shares: ipo.maker, min_qty: ipo.min, max_qty: ipo.max, minutes: ipo.minutes })
+    toast('أُعلن الاكتتاب', 'good'); ipo.symbol = ''; ipo.name = ''
+    loadIpos()
+  } catch (e) { toast(e.message, 'bad') }
+}
+async function allocateIpo(i) {
+  try {
+    const r = await api('POST', `/admin/ipos/${i.id}/allocate`)
+    toast(`خُصص ${r.sold} سهم لـ ${r.subscribers} مكتتب، وأُدرجت الشركة`, 'good')
+    loadIpos(); refresh()
+  } catch (e) { toast(e.message, 'bad') }
+}
 let timer = null
 
 function apply(d) {
@@ -55,7 +74,7 @@ const publish = async () => {
   news.title = ''
 }
 
-onMounted(() => { refresh(); timer = setInterval(refresh, 5000) })
+onMounted(() => { refresh(); loadIpos(); timer = setInterval(() => { refresh(); loadIpos() }, 5000) })
 onBeforeUnmount(() => clearInterval(timer))
 </script>
 
@@ -119,6 +138,36 @@ onBeforeUnmount(() => clearInterval(timer))
           </tbody>
         </table>
       </div>
+    </section>
+
+    <section class="panel pad">
+      <h3>الاكتتابات</h3>
+      <form class="row" @submit.prevent="createIpo">
+        <label>الرمز<input v-model="ipo.symbol" required maxlength="8" class="sm" dir="ltr" /></label>
+        <label class="grow">اسم الشركة<input v-model="ipo.name" required maxlength="100" /></label>
+        <label>القطاع<input v-model="ipo.sector" maxlength="60" /></label>
+        <label>سعر الطرح (ريال)<input v-model="ipo.price" type="number" min="0.01" step="0.01" required dir="ltr" /></label>
+        <label>وحدة السعر<input v-model="ipo.tick" type="number" min="0.01" step="0.01" required dir="ltr" /></label>
+        <label>الأسهم المطروحة<input v-model.number="ipo.offered" type="number" min="1" required dir="ltr" /></label>
+        <label>حصة صانع السوق<input v-model.number="ipo.maker" type="number" min="0" required dir="ltr" /></label>
+        <label>أقل كمية<input v-model.number="ipo.min" type="number" min="1" required dir="ltr" /></label>
+        <label>أكبر كمية<input v-model.number="ipo.max" type="number" min="1" required dir="ltr" /></label>
+        <label>مدة الاكتتاب (دقيقة)<input v-model.number="ipo.minutes" type="number" min="1" required dir="ltr" /></label>
+        <button class="primary">إعلان الاكتتاب</button>
+      </form>
+      <table v-if="ipos.length">
+        <thead><tr><th>الشركة</th><th>السعر</th><th>المطروح</th><th>المطلوب</th><th>المكتتبون</th><th>التغطية</th><th></th></tr></thead>
+        <tbody>
+          <tr v-for="i in ipos" :key="i.id">
+            <td><b>{{ i.name }}</b><small class="num">{{ i.symbol }}</small></td>
+            <td class="num">{{ money(i.price) }}</td><td class="num">{{ i.shares_offered }}</td>
+            <td class="num">{{ i.requested }}</td><td class="num">{{ i.subscribers }}</td>
+            <td class="num">{{ (i.coverage_bps / 100).toFixed(0) }}%</td>
+            <td><button v-if="i.status === 'open'" class="primary small" @click="allocateIpo(i)">إغلاق وتخصيص وإدراج</button>
+              <span v-else class="up">أُدرجت</span></td>
+          </tr>
+        </tbody>
+      </table>
     </section>
 
     <section class="panel pad">

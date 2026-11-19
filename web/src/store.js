@@ -16,6 +16,7 @@ export const state = reactive({
   positions: [],
   netWorth: 0,
   news: [],
+  ipos: [],
   whales: [],
   holders: { symbol: '', total_held: 0, holders: [] },
   connected: false,
@@ -101,6 +102,15 @@ export async function loadSymbol(symbol) {
   if (symbol !== state.selected) return
   state.book = { bids: d.bids, asks: d.asks, last: state.companies[symbol]?.last || 0 }
   state.trades = t.trades.map((x) => ({ price: x.price, qty: x.qty, side: x.taker_side, at: Date.parse(isoTime(x.executed_at)) }))
+}
+
+export async function loadIpos() {
+  state.ipos = (await api('GET', '/ipos')).ipos
+}
+
+export async function subscribeIpo(id, qty) {
+  await api('POST', `/ipos/${id}/subscribe`, { qty })
+  await Promise.all([loadIpos(), loadAccount()])
 }
 
 export async function loadNews() {

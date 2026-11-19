@@ -86,6 +86,10 @@ func main() {
 			Streams: []string{inStream, cursor}, Count: 500, Block: time.Second,
 		}).Result()
 		if err == redis.Nil {
+			// Idle: still apply admin changes and roll the day on time.
+			if terr := eng.Tick(ctx); terr != nil && ctx.Err() == nil {
+				log.Printf("tick: %v", terr)
+			}
 			continue
 		}
 		if err != nil {

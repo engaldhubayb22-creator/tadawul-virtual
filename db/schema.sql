@@ -256,3 +256,33 @@ CREATE TABLE audit_logs (
     ip         TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------------
+-- IPOs
+-- ---------------------------------------------------------------------------
+
+-- The company row is created with status 'pending' when the IPO is announced
+-- and switches to 'trading' when the IPO is allocated and listed.
+CREATE TABLE ipos (
+    id             BIGSERIAL PRIMARY KEY,
+    company_id     BIGINT NOT NULL UNIQUE REFERENCES companies (id),
+    price          BIGINT NOT NULL CHECK (price > 0),
+    shares_offered BIGINT NOT NULL CHECK (shares_offered > 0),
+    min_qty        BIGINT NOT NULL CHECK (min_qty > 0),
+    max_qty        BIGINT NOT NULL,
+    maker_shares   BIGINT NOT NULL DEFAULT 0 CHECK (maker_shares >= 0),  -- issued to the market maker at listing
+    closes_at      TIMESTAMPTZ NOT NULL,
+    status         TEXT   NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'listed', 'cancelled')),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (min_qty <= max_qty)
+);
+
+CREATE TABLE ipo_subscriptions (
+    ipo_id        BIGINT NOT NULL REFERENCES ipos (id),
+    user_id       BIGINT NOT NULL REFERENCES users (id),
+    qty_requested BIGINT NOT NULL CHECK (qty_requested > 0),
+    qty_allocated BIGINT CHECK (qty_allocated >= 0),     -- NULL until allocation
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (ipo_id, user_id),
+    CHECK (qty_allocated IS NULL OR qty_allocated <= qty_requested)
+);

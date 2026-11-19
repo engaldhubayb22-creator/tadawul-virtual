@@ -502,3 +502,36 @@ func TestAdminChangesReachTheEngine(t *testing.T) {
 		t.Fatalf("resume not applied: %+v", got)
 	}
 }
+
+func TestCompanyListedAfterStartupBecomesTradable(t *testing.T) {
+	f := setup(t)
+	clock := time.Now()
+	f.e.Now = func() time.Time { return clock }
+
+	// Announced as pending, the way an IPO creates it, with tick 5 and price 40.00.
+	f.exec(`INSERT INTO companies (symbol, name, shares_outstanding, tick_size, ref_price, status)
+	        VALUES ('9001', 'New Co', 1000000, 5, 4000, 'pending')`)
+	order := Command{UserID: f.buyer, Symbol: "9001", Side: "buy", Kind: "limit", Price: 4000, Qty: 10}
+	if got := orderEvent(t, f.send(order), f.buyer); got.Reason != "unknown_symbol" {
+		t.Fatalf("before refresh: %+v", got)
+	}
+	clock = clock.Add(refreshEvery + time.Second)
+	if err := f.e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := orderEvent(t, f.send(order), f.buyer); got.Reason != "halted" {
+		t.Fatalf("pending company must not trade: %+v", got)
+	}
+
+	f.exec(`UPDATE companies SET status = 'trading' WHERE symbol = '9001'`)
+	clock = clock.Add(refreshEvery + time.Second)
+	if got := orderEvent(t, f.send(order), f.buyer); got.Status != "open" {
+		t.Fatalf("listed company: %+v", got)
+	}
+	// Limits come from the listing price on its tick grid: 36.00 .. 44.00.
+	above := Command{UserID: f.buyer, Symbol: "9001", Side: "buy", Kind: "limit", Price: 4405, Qty: 1}
+	if got := orderEvent(t, f.send(above), f.buyer); got.Reason != "outside_daily_limits" {
+		t.Fatalf("limits not set for new company: %+v", got)
+	}
+	f.checkLedger()
+}

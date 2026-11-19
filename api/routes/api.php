@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\IpoController;
 use App\Http\Controllers\Api\MarketController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Middleware\AdminOnly;
@@ -17,6 +18,7 @@ Route::prefix('v1')->group(function () {
     Route::get('market', [MarketController::class, 'index']);
     Route::get('news', [MarketController::class, 'news']);
     Route::get('leaderboard', [MarketController::class, 'leaderboard']);
+    Route::get('ipos', [IpoController::class, 'index']);
     Route::get('market/{symbol}/holders', [MarketController::class, 'holders']);
     Route::get('market/{symbol}/depth', [MarketController::class, 'depth']);
     Route::get('market/{symbol}/trades', [MarketController::class, 'trades']);
@@ -26,6 +28,7 @@ Route::prefix('v1')->group(function () {
         Route::post('logout', [AuthController::class, 'logout']);
         Route::get('me', [AuthController::class, 'me']);
         Route::get('portfolio', [OrderController::class, 'portfolio']);
+        Route::post('ipos/{id}/subscribe', [IpoController::class, 'subscribe']);
         Route::get('orders', [OrderController::class, 'index']);
         Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:orders');
         Route::delete('orders/{id}', [OrderController::class, 'destroy'])->middleware('throttle:orders');
@@ -36,6 +39,8 @@ Route::prefix('v1')->group(function () {
             Route::put('bots/{symbol}', [AdminController::class, 'bot']);
             Route::put('companies/{symbol}/status', [AdminController::class, 'companyStatus']);
             Route::post('news', [AdminController::class, 'news']);
+            Route::post('ipos', [IpoController::class, 'store']);
+            Route::post('ipos/{id}/allocate', [IpoController::class, 'allocate']);
         });
     });
 });

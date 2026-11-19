@@ -4,8 +4,8 @@ import AdminPanel from './AdminPanel.vue'
 import AuthModal from './AuthModal.vue'
 import ChartPanel from './ChartPanel.vue'
 import {
-  cancelOrder, connect, loadHolders, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
-  restoreSession, select, state, toast,
+  cancelOrder, connect, loadAccount, loadHolders, loadIpos, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
+  restoreSession, select, state, subscribeIpo, toast,
 } from './store'
 
 const rows = computed(() => state.symbols.map((s) => state.companies[s]))
@@ -70,12 +70,28 @@ const time = (ms) => new Date(ms).toLocaleTimeString('en-GB', { timeZone: state.
 
 // ---- news, whales and top holders: refreshed on a slow timer while visible
 function refreshTab() {
+  // Allocations and refunds change the account without any order event, so
+  // the account tabs reload on their own too.
+  if (state.token && ['orders', 'positions', 'ipos'].includes(tab.value)) loadAccount().catch(() => {})
   if (tab.value === 'whales') loadWhales().catch(() => {})
+  if (tab.value === 'ipos') {
+    loadIpos().catch(() => {})
+    // A listed IPO adds a company to the market: pick it up.
+    if (state.ipos.some((i) => i.status === 'listed' && !state.companies[i.symbol])) loadMarket().catch(() => {})
+  }
   if (tab.value === 'holders' && state.selected) loadHolders(state.selected).catch(() => {})
 }
 watch([tab, () => state.selected], refreshTab)
 setInterval(refreshTab, 10000)
 setInterval(() => loadNews().catch(() => {}), 30000)
+const ipoQty = reactive({})
+async function subscribe(ipo) {
+  if (!state.token) { state.showAuth = true; return }
+  try {
+    await subscribeIpo(ipo.id, Number(ipoQty[ipo.id] || ipo.min_qty))
+    toast('تم الاكتتاب وحُجز المبلغ', 'good')
+  } catch (e) { toast(e.message, 'bad') }
+}
 const latestNews = computed(() => state.news.slice(0, 6))
 
 onMounted(async () => {
@@ -197,6 +213,7 @@ onMounted(async () => {
         <button :class="{ on: tab === 'positions' }" @click="tab = 'positions'">محفظتي</button>
         <button :class="{ on: tab === 'whales' }" @click="tab = 'whales'">الهوامير</button>
         <button :class="{ on: tab === 'holders' }" @click="tab = 'holders'">كبار الملاك</button>
+        <button :class="{ on: tab === 'ipos' }" @click="tab = 'ipos'">الاكتتابات</button>
         <span v-if="state.user" class="worth">صافي الثروة <b class="num">{{ money(state.netWorth) }}</b>
           · محجوز <span class="num">{{ money(state.balances.reserved) }}</span></span>
       </div>
@@ -209,6 +226,29 @@ onMounted(async () => {
             <td class="num muted">{{ money(w.stocks) }}</td><td class="num muted">{{ w.holdings }}</td>
           </tr>
           <tr v-if="!state.whales.length"><td colspan="6" class="empty">لا يوجد متداولون بعد</td></tr>
+        </tbody>
+      </table>
+      <table v-else-if="tab === 'ipos'">
+        <thead><tr><th>الشركة</th><th>سعر الطرح</th><th>المطروح</th><th>التغطية</th><th>الحالة</th><th>اكتتابي</th></tr></thead>
+        <tbody>
+          <tr v-for="i in state.ipos" :key="i.id">
+            <td><b>{{ i.name }}</b><small class="num">{{ i.symbol }}</small></td>
+            <td class="num">{{ money(i.price) }}</td><td class="num">{{ qty(i.shares_offered) }}</td>
+            <td class="num">{{ (i.coverage_bps / 100).toFixed(0) }}%</td>
+            <td>{{ i.status === 'listed' ? 'أُدرجت' : i.accepting ? 'مفتوح' : 'أُغلق، بانتظار التخصيص' }}</td>
+            <td class="pair">
+              <template v-if="i.my_requested != null">
+                <span class="num">طلبت {{ qty(i.my_requested) }}</span>
+                <span v-if="i.my_allocated != null" class="num up">خُصص {{ qty(i.my_allocated) }}</span>
+              </template>
+              <template v-else-if="i.accepting">
+                <input v-model.number="ipoQty[i.id]" type="number" :min="i.min_qty" :max="i.max_qty" class="sm" dir="ltr" :placeholder="i.min_qty + ' – ' + i.max_qty" />
+                <button class="primary small" @click="subscribe(i)">اكتتب</button>
+              </template>
+              <span v-else class="muted">—</span>
+            </td>
+          </tr>
+          <tr v-if="!state.ipos.length"><td colspan="6" class="empty">لا توجد اكتتابات</td></tr>
         </tbody>
       </table>
       <table v-else-if="tab === 'holders'">

@@ -177,23 +177,57 @@ func (e *Engine) refresh(ctx context.Context) error {
 	if err := e.loadSettings(ctx); err != nil {
 		return err
 	}
-	rows, err := e.db.QueryContext(ctx, `SELECT id, status FROM companies`)
+	rows, err := e.db.QueryContext(ctx, `SELECT id, symbol, tick_size, status FROM companies`)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	var added []*company
 	for rows.Next() {
-		var id int64
-		var status string
-		if err := rows.Scan(&id, &status); err != nil {
+		n := &company{}
+		if err := rows.Scan(&n.id, &n.symbol, &n.tick, &n.status); err != nil {
+			rows.Close()
 			return err
 		}
-		if c := e.byID[id]; c != nil {
-			c.status = status
+		if c := e.byID[n.id]; c != nil {
+			c.status = n.status
+		} else {
+			added = append(added, n)
 		}
 	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// A company announced after the engine started (an IPO): open its
+	// trading day and give it an empty book.
+	for _, c := range added {
+		if e.day != "" {
+			if _, err := e.db.ExecContext(ctx, `
+				INSERT INTO daily_stats (company_id, trade_date, prev_close, low_limit, high_limit)
+				SELECT c.id, $1::date, c.ref_price,
+				       (((c.ref_price * (10000 - $2::bigint) + 9999) / 10000) + c.tick_size - 1) / c.tick_size * c.tick_size,
+				       ((c.ref_price * (10000 + $2::bigint)) / 10000) / c.tick_size * c.tick_size
+				FROM companies c WHERE c.id = $3
+				ON CONFLICT (company_id, trade_date) DO NOTHING`, e.day, e.limitBps, c.id); err != nil {
+				return err
+			}
+			if err := e.reloadBook(ctx, c); err != nil {
+				return err
+			}
+		}
+		e.byID[c.id], e.bySy[c.symbol] = c, c
+	}
 	e.refreshed = e.Now()
-	return rows.Err()
+	return nil
+}
+
+// Tick does the engine's housekeeping when no commands are arriving: it
+// applies admin changes, picks up new companies and rolls the trading day.
+func (e *Engine) Tick(ctx context.Context) error {
+	if err := e.refresh(ctx); err != nil {
+		return err
+	}
+	return e.ensureDay(ctx)
 }
 
 // MarketOpen reports whether trading is allowed right now.
