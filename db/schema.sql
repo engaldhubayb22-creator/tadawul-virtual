@@ -31,6 +31,7 @@ INSERT INTO settings (key, value) VALUES
     ('market_close',             '"22:00"'),
     ('market_timezone',          '"Asia/Riyadh"'),
     ('daily_limit_bps',          '1000'),                -- 10%
+    ('market_hours_enforced',    'true'),
     ('commission_bps',           '0');
 
 -- ---------------------------------------------------------------------------
@@ -99,6 +100,8 @@ CREATE TABLE companies (
     sector_id          INT    REFERENCES sectors (id),
     shares_outstanding BIGINT NOT NULL CHECK (shares_outstanding > 0),
     tick_size          BIGINT NOT NULL DEFAULT 1 CHECK (tick_size > 0),
+    -- Listing price: the reference for the first trading day's limits.
+    ref_price          BIGINT NOT NULL CHECK (ref_price > 0),
     status             TEXT   NOT NULL DEFAULT 'trading'
                        CHECK (status IN ('pending', 'trading', 'halted', 'delisted')),
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -113,6 +116,9 @@ CREATE TABLE orders (
     price           BIGINT CHECK (price > 0),            -- NULL for market orders
     stop_price      BIGINT CHECK (stop_price > 0),
     qty             BIGINT NOT NULL CHECK (qty > 0),
+    -- Per-share amount reserved for a buy order: the limit price, or the
+    -- day's high limit for a market order. NULL for sell orders.
+    reserve_price   BIGINT CHECK (reserve_price > 0),
     filled_qty      BIGINT NOT NULL DEFAULT 0 CHECK (filled_qty >= 0),
     status          TEXT   NOT NULL DEFAULT 'new'
                     CHECK (status IN ('new', 'open', 'partial', 'filled',

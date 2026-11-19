@@ -218,6 +218,40 @@ func (b *Book) validate(o *Order) error {
 	return nil
 }
 
+// Validate reports whether Submit would accept the order, without changing
+// the book.
+func (b *Book) Validate(o Order) error { return b.validate(&o) }
+
+// Rest places an order directly in the book without matching. It is used to
+// rebuild the book from stored open orders after a restart; o.Remaining must
+// be the unfilled quantity. Orders must be restored oldest first.
+func (b *Book) Rest(in Order) error {
+	if in.Side != Buy && in.Side != Sell {
+		return ErrBadSide
+	}
+	if in.Price <= 0 {
+		return ErrBadPrice
+	}
+	if in.Remaining <= 0 {
+		return ErrBadQty
+	}
+	if _, dup := b.index[in.ID]; dup {
+		return ErrDuplicateID
+	}
+	o := &in
+	o.Kind = Limit
+	side := &b.bids
+	if o.Side == Sell {
+		side = &b.asks
+	}
+	side.add(o)
+	b.index[o.ID] = o
+	return nil
+}
+
+// SetLastPrice seeds the last traded price, e.g. after a restart.
+func (b *Book) SetLastPrice(p int64) { b.lastPrice = p }
+
 // Submit validates an order, matches it against the opposite side by
 // price-time priority, and rests any limit remainder. A returned error means
 // the order was rejected and the book is unchanged.
