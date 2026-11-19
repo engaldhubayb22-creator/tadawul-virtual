@@ -1,0 +1,122 @@
+:root {
+  --bg: #0b0f14; --panel: #121821; --line: #1e2733; --text: #d7dde5; --muted: #7d8a99;
+  --up: #16c784; --down: #ea3943; --accent: #3b82f6;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif; }
+#app { display: flex; flex-direction: column; }
+.num { font-variant-numeric: tabular-nums; direction: ltr; unicode-bidi: isolate; }
+.up { color: var(--up); } .down { color: var(--down); } .muted { color: var(--muted); }
+h1, h2 { margin: 0; font-size: 15px; font-weight: 600; }
+h2 { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+h2 small, h1 small { color: var(--muted); font-weight: 400; margin-inline-start: 6px; font-size: 12px; }
+button { font: inherit; color: inherit; cursor: pointer; border: 1px solid var(--line); background: transparent; border-radius: 6px; padding: 6px 12px; }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.small { padding: 4px 12px; }
+button.ghost { padding: 2px 10px; color: var(--muted); }
+button.ghost:hover { color: var(--text); }
+input { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; width: 100%; }
+input:focus { outline: 1px solid var(--accent); }
+label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+
+.top { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+.brand { font-weight: 700; font-size: 16px; }
+.note { font-weight: 400; font-size: 12px; color: var(--muted); margin-inline-start: 10px; }
+.status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pill { font-size: 12px; padding: 2px 10px; border-radius: 99px; border: 1px solid var(--line); }
+.pill.good { color: var(--up); } .pill.bad { color: var(--down); }
+.cash b { margin-inline-start: 4px; }
+.alias { color: var(--muted); }
+
+.grid { flex: 1; min-height: 0; display: grid; gap: 8px; padding: 8px;
+  grid-template-columns: 400px minmax(0, 1fr) 300px;
+  grid-template-rows: minmax(0, 1fr) 230px;
+  grid-template-areas: "list main side" "tape account side"; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.list { grid-area: list; overflow-y: auto; } .main { grid-area: main; } .side { grid-area: side; overflow-y: auto; }
+.tape { grid-area: tape; } .account { grid-area: account; overflow-y: auto; }
+
+table { width: 100%; border-collapse: collapse; }
+th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 400; font-size: 12px; text-align: start; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+td { padding: 7px 8px; border-bottom: 1px solid #161d27; white-space: nowrap; }
+.list tbody tr, .account tbody tr { cursor: pointer; }
+.list tbody tr:hover { background: #161e29; }
+tr.sel { background: #18222f; box-shadow: inset 3px 0 0 var(--accent); }
+td small { display: block; color: var(--muted); font-size: 11px; }
+.px { display: inline-block; padding: 1px 6px; border-radius: 4px; }
+.arrow { font-style: normal; font-size: 9px; margin-inline-start: 4px; }
+
+/* The price flash: a background that fades out. Animating only background
+   colour keeps it off the layout path, so hundreds of rows stay smooth. */
+@keyframes flash-up { from { background: rgba(22, 199, 132, .55); color: #fff; } to { background: transparent; } }
+@keyframes flash-down { from { background: rgba(234, 57, 67, .55); color: #fff; } to { background: transparent; } }
+.flash-up { animation: flash-up .6s ease-out; } .flash-down { animation: flash-down .6s ease-out; }
+
+.headline { display: flex; align-items: baseline; gap: 14px; padding: 10px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.big { font-size: 24px; font-weight: 700; padding: 0 8px; border-radius: 6px; }
+.limits { margin-inline-start: auto; font-size: 12px; }
+.chart { flex: 1; min-height: 220px; direction: ltr; }
+
+.depth { padding: 6px 0; font-size: 13px; }
+.dhead, .lvl { display: grid; grid-template-columns: 1fr 1fr 50px; padding: 2px 12px; position: relative; }
+.dhead { color: var(--muted); font-size: 11px; }
+.lvl { cursor: pointer; } .lvl:hover { background: #1a2330; }
+.lvl i { position: absolute; inset-block: 1px; inset-inline-end: 0; opacity: .14; pointer-events: none; }
+.ask i { background: var(--down); } .bid i { background: var(--up); }
+.lvl span, .dhead span { position: relative; text-align: start; }
+.mid { text-align: center; font-size: 16px; font-weight: 700; padding: 6px; border-block: 1px solid var(--line); margin-block: 4px; }
+
+.ticket { display: grid; gap: 10px; padding: 12px; border-top: 1px solid var(--line); margin-top: auto; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.seg button.on { background: #1d2836; color: #fff; border-color: #2c3a4d; }
+.seg .buy.on { background: var(--up); border-color: var(--up); color: #04130c; font-weight: 700; }
+.seg .sell.on { background: var(--down); border-color: var(--down); color: #fff; font-weight: 700; }
+.seg.thin button { padding: 3px; font-size: 12px; }
+.est { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+.est b { color: var(--text); }
+.go { padding: 10px; font-weight: 700; border: 0; }
+.go.buy { background: var(--up); color: #04130c; } .go.sell { background: var(--down); color: #fff; }
+
+.rows { overflow-y: auto; font-size: 13px; }
+.trow { display: grid; grid-template-columns: 1fr 1fr 1fr; padding: 2px 12px; }
+.empty { color: var(--muted); text-align: center; padding: 18px; margin: 0; }
+
+.tabs { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.tabs button { border: 0; color: var(--muted); }
+.tabs button.on { color: var(--text); background: #1d2836; }
+.worth { margin-inline-start: auto; color: var(--muted); font-size: 12px; }
+.worth b { color: var(--text); }
+
+.toasts { position: fixed; bottom: 14px; inset-inline-start: 14px; display: grid; gap: 8px; z-index: 30; }
+.toast { background: #1d2836; border: 1px solid var(--line); border-inline-start: 3px solid var(--accent); padding: 8px 14px; border-radius: 6px; }
+.toast.good { border-inline-start-color: var(--up); } .toast.bad { border-inline-start-color: var(--down); }
+
+.overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); display: grid; place-items: center; z-index: 20; padding: 16px; }
+.modal { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; width: min(380px, 100%); display: grid; gap: 12px; }
+.modal .tabs { padding: 0 0 8px; }
+.error { color: var(--down); margin: 0; } .hint { color: var(--muted); font-size: 12px; margin: 0; }
+
+/* Below desktop width the page scrolls as a whole instead of each panel
+   fitting the window, so nothing is squeezed to zero height. */
+@media (max-width: 1100px) {
+  html, body, #app { height: auto; }
+  .grid { flex: none; grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: none; grid-auto-rows: auto;
+    grid-template-areas: "main side" "list side" "account account" "tape tape"; }
+  .panel { overflow: visible; }
+  .main { height: 440px; }
+  .list { max-height: 420px; overflow-y: auto; }
+  .tape .rows { max-height: 240px; }
+  .account { overflow-x: auto; }
+}
+@media (max-width: 720px) {
+  .grid { grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "list" "main" "side" "account" "tape"; }
+  .main { height: 380px; }
+  .list { max-height: 300px; }
+  .hide-s { display: none; }
+  .note { display: block; margin: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .flash-up, .flash-down { animation-duration: .01s; } }

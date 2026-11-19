@@ -97,6 +97,10 @@ func TestBookSnapshotOnSubscribeThenLiveUpdates(t *testing.T) {
 	if m.Ch != "book:2222" || b.Last != 2700 || len(b.Bids) != 1 || b.Bids[0].Price != 2690 {
 		t.Fatalf("snapshot = %+v %s", m, m.Data)
 	}
+	// Field names on the wire are lower case, the same as the REST API.
+	if !strings.Contains(string(m.Data), `"bids":[{"price":2690,"qty":100,"orders":1}]`) {
+		t.Fatalf("depth level encoding: %s", m.Data)
+	}
 	// An empty side is an empty list, never null, so clients can loop over it.
 	if !strings.Contains(string(m.Data), `"asks":[]`) {
 		t.Fatalf("asks should encode as []: %s", m.Data)

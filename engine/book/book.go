@@ -74,9 +74,9 @@ type Result struct {
 
 // LevelView is one aggregated price level, for market-depth display.
 type LevelView struct {
-	Price  int64
-	Qty    int64
-	Orders int
+	Price  int64 `json:"price"`
+	Qty    int64 `json:"qty"`
+	Orders int   `json:"orders"`
 }
 
 type level struct {
