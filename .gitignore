@@ -5,3 +5,4 @@ node_modules/
 /engine/bin/
 
 deploy/.env
+deploy/.env.local

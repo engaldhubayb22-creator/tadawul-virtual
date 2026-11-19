@@ -1,0 +1,4 @@
+# Shell-style files must keep LF inside Linux containers; Windows scripts keep CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
