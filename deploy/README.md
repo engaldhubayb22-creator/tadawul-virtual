@@ -18,10 +18,10 @@ cp deploy/.env.example deploy/.env
 عدّل `deploy/.env`:
 
 1. `POSTGRES_PASSWORD`: كلمة مرور طويلة من حروف وأرقام فقط.
-2. `APP_KEY`: ولّده بهذا الأمر ثم الصقه:
+2. `APP_KEY`: ولّده بهذا الأمر ثم الصق الناتج كاملًا:
 
    ```bash
-   docker compose -f deploy/docker-compose.yml --env-file deploy/.env run --rm --no-deps -e APP_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= api php artisan key:generate --show
+   echo "base64:$(openssl rand -base64 32)"
    ```
 
 3. `APP_URL`: عنوان الموقع.
