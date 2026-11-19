@@ -16,6 +16,8 @@ Route::prefix('v1')->group(function () {
 
     Route::get('market', [MarketController::class, 'index']);
     Route::get('news', [MarketController::class, 'news']);
+    Route::get('leaderboard', [MarketController::class, 'leaderboard']);
+    Route::get('market/{symbol}/holders', [MarketController::class, 'holders']);
     Route::get('market/{symbol}/depth', [MarketController::class, 'depth']);
     Route::get('market/{symbol}/trades', [MarketController::class, 'trades']);
     Route::get('market/{symbol}/candles', [MarketController::class, 'candles']);

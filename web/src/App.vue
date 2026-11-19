@@ -4,7 +4,8 @@ import AdminPanel from './AdminPanel.vue'
 import AuthModal from './AuthModal.vue'
 import ChartPanel from './ChartPanel.vue'
 import {
-  cancelOrder, connect, loadMarket, logout, money, pct, placeOrder, qty, restoreSession, select, state, toast,
+  cancelOrder, connect, loadHolders, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
+  restoreSession, select, state, toast,
 } from './store'
 
 const rows = computed(() => state.symbols.map((s) => state.companies[s]))
@@ -67,7 +68,18 @@ const maxDepth = computed(() => Math.max(1, ...state.book.bids.map((l) => l.qty)
 const asksTopDown = computed(() => [...state.book.asks].reverse())
 const time = (ms) => new Date(ms).toLocaleTimeString('en-GB', { timeZone: state.market.timezone })
 
+// ---- news, whales and top holders: refreshed on a slow timer while visible
+function refreshTab() {
+  if (tab.value === 'whales') loadWhales().catch(() => {})
+  if (tab.value === 'holders' && state.selected) loadHolders(state.selected).catch(() => {})
+}
+watch([tab, () => state.selected], refreshTab)
+setInterval(refreshTab, 10000)
+setInterval(() => loadNews().catch(() => {}), 30000)
+const latestNews = computed(() => state.news.slice(0, 6))
+
 onMounted(async () => {
+  loadNews().catch(() => {})
   connect()
   try { await loadMarket() } catch (e) { toast(e.message, 'bad') }
   restoreSession()
@@ -93,6 +105,12 @@ onMounted(async () => {
     </div>
   </header>
 
+  <div v-if="latestNews.length && view === 'trade'" class="newsbar">
+    <b>الأخبار</b>
+    <button v-for="n in latestNews" :key="n.id" class="newsitem" :title="n.body" @click="n.symbol && select(n.symbol)">
+      <span v-if="n.name" class="muted">{{ n.name }}:</span> {{ n.title }}
+    </button>
+  </div>
   <AdminPanel v-if="view === 'admin' && isAdmin" />
   <main v-else class="grid">
     <!-- watchlist -->
@@ -177,10 +195,34 @@ onMounted(async () => {
       <div class="tabs">
         <button :class="{ on: tab === 'orders' }" @click="tab = 'orders'">أوامري المفتوحة ({{ state.orders.length }})</button>
         <button :class="{ on: tab === 'positions' }" @click="tab = 'positions'">محفظتي</button>
+        <button :class="{ on: tab === 'whales' }" @click="tab = 'whales'">الهوامير</button>
+        <button :class="{ on: tab === 'holders' }" @click="tab = 'holders'">كبار الملاك</button>
         <span v-if="state.user" class="worth">صافي الثروة <b class="num">{{ money(state.netWorth) }}</b>
           · محجوز <span class="num">{{ money(state.balances.reserved) }}</span></span>
       </div>
-      <p v-if="!state.user" class="empty">سجّل الدخول لتبدأ التداول برصيدك الافتراضي.</p>
+      <table v-if="tab === 'whales'">
+        <thead><tr><th>#</th><th>المتداول</th><th>صافي الثروة</th><th>نقد</th><th>أسهم</th><th>عدد الشركات</th></tr></thead>
+        <tbody>
+          <tr v-for="w in state.whales" :key="w.user_id" :class="{ sel: w.user_id === state.user?.id }">
+            <td class="num">{{ w.rank }}</td><td><b>{{ w.alias }}</b></td>
+            <td class="num">{{ money(w.net_worth) }}</td><td class="num muted">{{ money(w.cash) }}</td>
+            <td class="num muted">{{ money(w.stocks) }}</td><td class="num muted">{{ w.holdings }}</td>
+          </tr>
+          <tr v-if="!state.whales.length"><td colspan="6" class="empty">لا يوجد متداولون بعد</td></tr>
+        </tbody>
+      </table>
+      <table v-else-if="tab === 'holders'">
+        <thead><tr><th>المالك في {{ current?.name }}</th><th>الكمية</th><th>النسبة من الأسهم المملوكة</th></tr></thead>
+        <tbody>
+          <tr v-for="h in state.holders.holders" :key="h.holder">
+            <td><b>{{ h.holder }}</b> <small v-if="h.is_fund" class="tag">صندوق</small></td>
+            <td class="num">{{ qty(h.qty) }}</td>
+            <td class="num">{{ (h.share_bps / 100).toFixed(2) }}%</td>
+          </tr>
+          <tr v-if="!state.holders.holders.length"><td colspan="3" class="empty">لا يوجد ملاك بعد</td></tr>
+        </tbody>
+      </table>
+      <p v-else-if="!state.user" class="empty">سجّل الدخول لتبدأ التداول برصيدك الافتراضي.</p>
       <table v-else-if="tab === 'orders'">
         <thead><tr><th>السهم</th><th>الاتجاه</th><th>السعر</th><th>الكمية</th><th>المنفّذ</th><th></th></tr></thead>
         <tbody>

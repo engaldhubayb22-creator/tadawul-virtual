@@ -109,6 +109,77 @@ class MarketController extends Controller
         return response()->json(['symbol' => $company->symbol, 'interval' => '1m', 'candles' => $rows]);
     }
 
+    /**
+     * The whales list: traders ranked by net worth (cash, cash held by open
+     * orders, and shares at the last price). Bot and staff accounts are left out.
+     */
+    public function leaderboard(): JsonResponse
+    {
+        $rows = DB::select(<<<'SQL'
+            WITH px AS (
+                SELECT c.id, COALESCE(
+                    (SELECT price FROM trades WHERE company_id = c.id ORDER BY id DESC LIMIT 1),
+                    (SELECT prev_close FROM daily_stats WHERE company_id = c.id ORDER BY trade_date DESC LIMIT 1),
+                    c.ref_price) AS last
+                FROM companies c
+            ), cash AS (
+                SELECT user_id, sum(balance) AS amount FROM ledger_accounts
+                WHERE user_id IS NOT NULL AND kind IN ('cash', 'reserved') GROUP BY user_id
+            ), stock AS (
+                SELECT p.user_id, sum(p.qty * px.last) AS amount, count(*) FILTER (WHERE p.qty > 0) AS holdings
+                FROM positions p JOIN px ON px.id = p.company_id GROUP BY p.user_id
+            )
+            SELECT u.id, u.alias,
+                   COALESCE(cash.amount, 0) AS cash, COALESCE(stock.amount, 0) AS stocks,
+                   COALESCE(cash.amount, 0) + COALESCE(stock.amount, 0) AS net_worth,
+                   COALESCE(stock.holdings, 0) AS holdings
+            FROM users u
+            LEFT JOIN cash ON cash.user_id = u.id
+            LEFT JOIN stock ON stock.user_id = u.id
+            WHERE u.role = 'trader' AND u.status = 'active'
+            ORDER BY net_worth DESC, u.id
+            LIMIT 50
+            SQL);
+
+        $rank = 0;
+        $traders = array_map(function ($r) use (&$rank) {
+            return [
+                'rank' => ++$rank, 'user_id' => (int) $r->id, 'alias' => $r->alias,
+                'net_worth' => (int) $r->net_worth, 'cash' => (int) $r->cash,
+                'stocks' => (int) $r->stocks, 'holdings' => (int) $r->holdings,
+            ];
+        }, $rows);
+
+        return response()->json(['traders' => $traders]);
+    }
+
+    /**
+     * Largest holders of one company. Bot accounts appear under their fund
+     * name; the share is of all shares currently held.
+     */
+    public function holders(string $symbol): JsonResponse
+    {
+        $company = $this->company($symbol);
+        $total = (int) DB::table('positions')->where('company_id', $company->id)->sum('qty');
+        $rows = DB::select(<<<'SQL'
+            SELECT CASE WHEN u.role = 'bot' THEN u.name ELSE u.alias END AS holder,
+                   u.role = 'bot' AS is_fund, p.qty
+            FROM positions p JOIN users u ON u.id = p.user_id
+            WHERE p.company_id = ? AND p.qty > 0
+            ORDER BY p.qty DESC, u.id
+            LIMIT 10
+            SQL, [$company->id]);
+
+        return response()->json([
+            'symbol' => $company->symbol,
+            'total_held' => $total,
+            'holders' => array_map(fn ($r) => [
+                'holder' => $r->holder, 'is_fund' => (bool) $r->is_fund, 'qty' => (int) $r->qty,
+                'share_bps' => $total > 0 ? intdiv((int) $r->qty * 10000, $total) : 0,
+            ], $rows),
+        ]);
+    }
+
     public function news(): JsonResponse
     {
         $rows = DB::table('news as n')->leftJoin('companies as c', 'c.id', '=', 'n.company_id')

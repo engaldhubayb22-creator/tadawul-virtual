@@ -99,6 +99,12 @@ td small { display: block; color: var(--muted); font-size: 11px; }
 .modal .tabs { padding: 0 0 8px; }
 .error { color: var(--down); margin: 0; } .hint { color: var(--muted); font-size: 12px; margin: 0; }
 
+.newsbar { display: flex; align-items: center; gap: 6px; padding: 4px 14px; border-bottom: 1px solid var(--line); overflow-x: auto; white-space: nowrap; font-size: 13px; }
+.newsbar b { color: var(--accent); margin-inline-end: 6px; }
+.newsitem { border: 0; border-inline-end: 1px solid var(--line); border-radius: 0; padding: 2px 12px; }
+.newsitem:hover { color: #fff; }
+td small.tag { display: inline; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; margin-inline-start: 6px; }
+
 .admin { flex: 1; min-height: 0; padding: 8px; display: grid; gap: 8px; align-content: start; overflow-y: auto; }
 .admin .panel { overflow: visible; }
 .pad { padding: 12px 14px; gap: 12px; }

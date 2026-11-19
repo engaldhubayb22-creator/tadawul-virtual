@@ -15,6 +15,9 @@ export const state = reactive({
   orders: [],
   positions: [],
   netWorth: 0,
+  news: [],
+  whales: [],
+  holders: { symbol: '', total_held: 0, holders: [] },
   connected: false,
   toasts: [],
   showAuth: false,
@@ -98,6 +101,19 @@ export async function loadSymbol(symbol) {
   if (symbol !== state.selected) return
   state.book = { bids: d.bids, asks: d.asks, last: state.companies[symbol]?.last || 0 }
   state.trades = t.trades.map((x) => ({ price: x.price, qty: x.qty, side: x.taker_side, at: Date.parse(isoTime(x.executed_at)) }))
+}
+
+export async function loadNews() {
+  state.news = (await api('GET', '/news')).news
+}
+
+export async function loadWhales() {
+  state.whales = (await api('GET', '/leaderboard')).traders
+}
+
+export async function loadHolders(symbol) {
+  const data = await api('GET', `/market/${symbol}/holders`)
+  if (symbol === state.selected) state.holders = data
 }
 
 // PostgreSQL prints "2026-11-20 01:17:00+03"; browsers want "2026-11-20T01:17:00+03:00".

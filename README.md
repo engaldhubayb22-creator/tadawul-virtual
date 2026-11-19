@@ -108,6 +108,9 @@ php artisan test
 | GET | `/api/v1/market/{symbol}/depth` | عمق السوق |
 | GET | `/api/v1/market/{symbol}/trades` | آخر الصفقات |
 | GET | `/api/v1/market/{symbol}/candles` | شموع الدقيقة |
+| GET | `/api/v1/market/{symbol}/holders` | كبار الملاك |
+| GET | `/api/v1/leaderboard` | قائمة الهوامير حسب صافي الثروة |
+| GET | `/api/v1/news` | آخر الأخبار |
 | GET | `/api/v1/portfolio` | المراكز والقيمة والربح والخسارة |
 | GET | `/api/v1/orders` | أوامري (`?status=open` أو `?key=`) |
 | POST | `/api/v1/orders` | أمر جديد |
@@ -152,7 +155,7 @@ cd api && php artisan app:make-admin 05xxxxxxxx   # ترقية مستخدم مس
 ## الخطوة التالية
 
 1. قائمة الشركات الكاملة، وترابط حركة أسهم القطاع الواحد.
-2. شريط الأخبار في شاشة التداول، وقائمة الهوامير وكبار الملاك.
+2. الاكتتابات والتمويل بالهامش.
 3. نقل التسوية إلى دالة واحدة في قاعدة البيانات لرفع السرعة.
 4. انتظار الأوامر خارج وقت السوق، وأمر وقف الخسارة، والعمولة.
 5. اختبارات Playwright للواجهة داخل المستودع.

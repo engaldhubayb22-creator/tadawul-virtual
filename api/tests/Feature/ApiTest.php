@@ -208,4 +208,36 @@ class ApiTest extends TestCase
             ->assertJsonPath('positions.0.unrealized_pnl', 20000)
             ->assertJsonPath('net_worth', 10270000);
     }
+
+    public function test_leaderboard_ranks_traders_by_net_worth_and_hides_bots(): void
+    {
+        $poor = $this->registerUser('small_fish', '0500000011');
+        $rich = $this->registerUser('big_whale', '0500000012');
+        $companyId = DB::table('companies')->value('id');
+        // The whale also holds 1,000 shares worth 27.00 each = 27,000 SAR.
+        DB::table('positions')->insert(['user_id' => $rich['user']['id'], 'company_id' => $companyId, 'qty' => 1000, 'cost_total' => 1]);
+        // A bot far richer than anyone must not appear.
+        $bot = DB::table('users')->insertGetId(['name' => 'صندوق السيولة', 'alias' => 'mm-bot', 'mobile' => 'mm-bot', 'password' => '!', 'role' => 'bot']);
+        DB::table('positions')->insert(['user_id' => $bot, 'company_id' => $companyId, 'qty' => 9000, 'cost_total' => 1]);
+
+        $this->getJson('/api/v1/leaderboard')->assertOk()
+            ->assertJsonCount(2, 'traders')
+            ->assertJsonPath('traders.0.alias', 'big_whale')
+            ->assertJsonPath('traders.0.rank', 1)
+            ->assertJsonPath('traders.0.net_worth', 10000000 + 2700000)
+            ->assertJsonPath('traders.0.holdings', 1)
+            ->assertJsonPath('traders.1.alias', 'small_fish')
+            ->assertJsonPath('traders.1.net_worth', 10000000);
+
+        // Top holders: the fund shows under its name, shares are of all held (9,000 of 10,000).
+        $this->getJson('/api/v1/market/2222/holders')->assertOk()
+            ->assertJsonPath('total_held', 10000)
+            ->assertJsonPath('holders.0.holder', 'صندوق السيولة')
+            ->assertJsonPath('holders.0.is_fund', true)
+            ->assertJsonPath('holders.0.share_bps', 9000)
+            ->assertJsonPath('holders.1.holder', 'big_whale')
+            ->assertJsonPath('holders.1.share_bps', 1000);
+        $this->getJson('/api/v1/market/9999/holders')->assertStatus(404);
+        $this->assertNotNull($poor['token']);
+    }
 }

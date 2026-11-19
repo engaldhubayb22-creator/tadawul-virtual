@@ -33,13 +33,14 @@ var companies = []co{
 
 type bot struct {
 	alias  string
-	cash   int64 // halalas
-	shares int64 // per company
+	name   string // shown in the top-holders list
+	cash   int64  // halalas
+	shares int64  // per company
 }
 
 var bots = []bot{
-	{"mm-bot", 1_000_000_000_000, 10_000_000}, // liquidity provider
-	{"noise-bot", 100_000_000_000, 1_000_000}, // random small trades
+	{"mm-bot", "صندوق السيولة", 1_000_000_000_000, 10_000_000},       // liquidity provider
+	{"noise-bot", "محفظة التداول النشط", 100_000_000_000, 1_000_000}, // random small trades
 }
 
 func main() {
@@ -79,7 +80,7 @@ func main() {
 	for _, b := range bots {
 		must(tx.Exec(`
 			INSERT INTO users (name, alias, mobile, password, role)
-			VALUES ($1, $1, $1, '!', 'bot') ON CONFLICT (alias) DO NOTHING`, b.alias))
+			VALUES ($2, $1, $1, '!', 'bot') ON CONFLICT (alias) DO UPDATE SET name = EXCLUDED.name`, b.alias, b.name))
 		var uid int64
 		if err := tx.QueryRow(`SELECT id FROM users WHERE alias = $1`, b.alias).Scan(&uid); err != nil {
 			log.Fatal(err)
