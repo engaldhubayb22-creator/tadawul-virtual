@@ -14,7 +14,7 @@
 | `engine/cmd/bot` | صانع سوق مبسّط: بوت سيولة وبوت ضجيج | نسخة أولى |
 | `db/schema.sql` | جداول المرحلة الأولى (PostgreSQL 16) | جاهز |
 | `docker-compose.yml` | PostgreSQL و Redis للتطوير المحلي | جاهز |
-| `api/` | Laravel API | لم يبدأ |
+| `api/` | Laravel 13 API: التسجيل، الدخول، الرصيد الابتدائي، استقبال الأوامر، بيانات السوق والمحفظة | جاهز ومختبَر |
 | `web/` | واجهة Vue 3 | لم يبدأ |
 
 ## محرك المطابقة
@@ -40,7 +40,14 @@ cd engine
 go run ./cmd/seed                    # الشركات والبوتات
 go run ./cmd/engine                  # المحرك
 go run ./cmd/bot                     # صانع السوق (في نافذة أخرى)
+
+cd ../api
+composer install
+cp .env.example .env && php artisan key:generate
+php artisan serve                    # الـ API على http://127.0.0.1:8000/api/v1
 ```
+
+الجداول مصدرها ملف واحد هو `db/schema.sql`. مع docker تُنشأ تلقائيًا، وبدونه: `php artisan migrate`.
 
 السوق يعمل من 10:00 إلى 22:00 بتوقيت الرياض. للتجربة خارج الوقت:
 
@@ -52,7 +59,7 @@ UPDATE settings SET value = 'false' WHERE key = 'market_hours_enforced';
 
 ## كيف يمر الأمر
 
-1. أي عميل (Laravel لاحقًا، والبوتات الآن) يضيف أمرًا إلى `orders:in` في Redis.
+1. الـ API (لأوامر المستخدمين) والبوتات يضيفون الأمر إلى `orders:in` في Redis. الرد على المستخدم `queued` مع مفتاح الأمر.
 2. المحرك، في معاملة قاعدة بيانات واحدة: يحجز النقد أو الأسهم، يطابق، يسوّي الصفقات في الدفتر المالي والمراكز، ثم يثبّت.
 3. بعد التثبيت ينشر الأحداث (`order` و `trade` و `book`) إلى `market:events`.
 
@@ -67,7 +74,13 @@ go test ./book
 TEST_DATABASE_URL='postgres://tadawul:tadawul_dev@localhost:5432/tadawul_test?sslmode=disable' go test ./service
 ```
 
-اختبارات `service` تمسح قاعدة البيانات المحددة، فاستخدم قاعدة مخصصة للاختبار.
+```bash
+cd api
+createdb -h localhost -U tadawul tadawul_test   # مرة واحدة
+php artisan test
+```
+
+اختبارات `service` و `api` تحتاج PostgreSQL و Redis يعملان. اختبارات `service` تمسح قاعدة البيانات المحددة، فاستخدم قاعدة مخصصة للاختبار.
 
 ## حدود معروفة
 
@@ -77,3 +90,28 @@ TEST_DATABASE_URL='postgres://tadawul:tadawul_dev@localhost:5432/tadawul_test?ss
 - البوت يعيد التسعير لكل سهم في كل دورة، وهذا لا يناسب مئات الأسهم.
 - الشركات العشر وأسعارها بيانات تجريبية، لا بيانات السوق الحقيقي.
 
+## نقاط الـ API
+
+كل الأسعار والمبالغ أعداد صحيحة بالهللة.
+
+| الطريقة | المسار | الوصف |
+| --- | --- | --- |
+| POST | `/api/v1/register` | تسجيل، ويُمنح الرصيد الابتدائي |
+| POST | `/api/v1/login` | دخول برقم الجوال وكلمة المرور، ويعيد التوكن |
+| POST | `/api/v1/logout` | خروج |
+| GET | `/api/v1/me` | المستخدم وأرصدته |
+| GET | `/api/v1/market` | الشركات وآخر سعر والتغير والحدود |
+| GET | `/api/v1/market/{symbol}/depth` | عمق السوق |
+| GET | `/api/v1/market/{symbol}/trades` | آخر الصفقات |
+| GET | `/api/v1/market/{symbol}/candles` | شموع الدقيقة |
+| GET | `/api/v1/portfolio` | المراكز والقيمة والربح والخسارة |
+| GET | `/api/v1/orders` | أوامري (`?status=open` أو `?key=`) |
+| POST | `/api/v1/orders` | أمر جديد |
+| DELETE | `/api/v1/orders/{id}` | إلغاء أمر |
+
+## الخطوة التالية
+
+1. Centrifugo وجسر الأحداث من `market:events` إلى قنوات البث.
+2. واجهة Vue: الشاشة المباشرة والمحفظة.
+3. نقل التسوية إلى دالة واحدة في قاعدة البيانات لرفع السرعة.
+4. انتظار الأوامر خارج وقت السوق، وأمر وقف الخسارة، والعمولة.
