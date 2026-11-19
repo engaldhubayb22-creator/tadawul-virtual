@@ -16,6 +16,7 @@ export const state = reactive({
   positions: [],
   netWorth: 0,
   news: [],
+  financing: null,
   ipos: [],
   whales: [],
   holders: { symbol: '', total_held: 0, holders: [] },
@@ -92,6 +93,7 @@ export async function loadAccount() {
   state.positions = p.positions
   state.netWorth = p.net_worth
   state.orders = o.orders
+  loadFinancing().catch(() => {})
 }
 
 export async function loadSymbol(symbol) {
@@ -102,6 +104,20 @@ export async function loadSymbol(symbol) {
   if (symbol !== state.selected) return
   state.book = { bids: d.bids, asks: d.asks, last: state.companies[symbol]?.last || 0 }
   state.trades = t.trades.map((x) => ({ price: x.price, qty: x.qty, side: x.taker_side, at: Date.parse(isoTime(x.executed_at)) }))
+}
+
+export async function loadFinancing() {
+  if (state.token) state.financing = await api('GET', '/financing')
+}
+
+export async function requestFinancing(amount) {
+  state.financing = await api('POST', '/financing', { amount })
+  await loadAccount()
+}
+
+export async function repayFinancing() {
+  state.financing = await api('POST', '/financing/repay')
+  await loadAccount()
 }
 
 export async function loadIpos() {
@@ -157,6 +173,7 @@ export function logout(callServer = true) {
   state.user = null
   state.orders = []
   state.positions = []
+  state.financing = null
   localStorage.removeItem('token')
   if (ws) ws.close() // reconnects as a guest, dropping the private channel
 }

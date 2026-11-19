@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\FinancingController;
 use App\Http\Controllers\Api\IpoController;
 use App\Http\Controllers\Api\MarketController;
 use App\Http\Controllers\Api\OrderController;
@@ -29,6 +30,9 @@ Route::prefix('v1')->group(function () {
         Route::get('me', [AuthController::class, 'me']);
         Route::get('portfolio', [OrderController::class, 'portfolio']);
         Route::post('ipos/{id}/subscribe', [IpoController::class, 'subscribe']);
+        Route::get('financing', [FinancingController::class, 'show']);
+        Route::post('financing', [FinancingController::class, 'store']);
+        Route::post('financing/repay', [FinancingController::class, 'repay']);
         Route::get('orders', [OrderController::class, 'index']);
         Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:orders');
         Route::delete('orders/{id}', [OrderController::class, 'destroy'])->middleware('throttle:orders');

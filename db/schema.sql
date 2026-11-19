@@ -286,3 +286,33 @@ CREATE TABLE ipo_subscriptions (
     PRIMARY KEY (ipo_id, user_id),
     CHECK (qty_allocated IS NULL OR qty_allocated <= qty_requested)
 );
+
+-- ---------------------------------------------------------------------------
+-- Margin financing
+-- ---------------------------------------------------------------------------
+
+-- A fixed-fee financing: the fee is agreed up front and does not grow.
+CREATE TABLE financings (
+    id               BIGSERIAL PRIMARY KEY,
+    user_id          BIGINT NOT NULL REFERENCES users (id),
+    principal        BIGINT NOT NULL CHECK (principal > 0),
+    fee              BIGINT NOT NULL CHECK (fee >= 0),
+    status           TEXT   NOT NULL DEFAULT 'active'
+                     CHECK (status IN ('active', 'liquidating', 'repaid', 'liquidated', 'defaulted')),
+    due_at           TIMESTAMPTZ NOT NULL,
+    margin_called_at TIMESTAMPTZ,
+    written_off      BIGINT NOT NULL DEFAULT 0 CHECK (written_off >= 0),  -- unpaid amount on default
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    closed_at        TIMESTAMPTZ
+);
+
+-- One open financing per user at a time.
+CREATE UNIQUE INDEX financings_one_open ON financings (user_id) WHERE status IN ('active', 'liquidating');
+
+INSERT INTO settings (key, value) VALUES
+    ('financing_enabled',       'true'),
+    ('financing_max_ratio_bps', '10000'),   -- may owe up to 100% of own equity
+    ('financing_fee_bps',       '100'),     -- fixed fee: 1% of the amount (placeholder)
+    ('financing_days',          '30'),
+    ('margin_call_bps',         '3000'),    -- warn when equity falls to 30% of assets
+    ('liquidation_bps',         '2000');    -- sell out when it falls to 20%

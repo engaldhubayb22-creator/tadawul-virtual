@@ -111,12 +111,15 @@ class OrderController extends Controller
         }, $rows);
 
         $balances = Ledger::balances($request->user()->id);
+        $debt = (int) DB::table('financings')->where('user_id', $request->user()->id)
+            ->whereIn('status', ['active', 'liquidating'])->sum(DB::raw('principal + fee'));
 
         return response()->json([
             'balances' => $balances,
             'positions' => $positions,
             'market_value' => $marketValue,
-            'net_worth' => $balances['cash'] + $balances['reserved'] + $marketValue,
+            'debt' => $debt,
+            'net_worth' => $balances['cash'] + $balances['reserved'] + $marketValue - $debt,
         ]);
     }
 }

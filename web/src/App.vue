@@ -5,7 +5,7 @@ import AuthModal from './AuthModal.vue'
 import ChartPanel from './ChartPanel.vue'
 import {
   cancelOrder, connect, loadAccount, loadHolders, loadIpos, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
-  restoreSession, select, state, subscribeIpo, toast,
+  repayFinancing, requestFinancing, restoreSession, select, state, subscribeIpo, toast,
 } from './store'
 
 const rows = computed(() => state.symbols.map((s) => state.companies[s]))
@@ -72,7 +72,7 @@ const time = (ms) => new Date(ms).toLocaleTimeString('en-GB', { timeZone: state.
 function refreshTab() {
   // Allocations and refunds change the account without any order event, so
   // the account tabs reload on their own too.
-  if (state.token && ['orders', 'positions', 'ipos'].includes(tab.value)) loadAccount().catch(() => {})
+  if (state.token && ['orders', 'positions', 'ipos', 'financing'].includes(tab.value)) loadAccount().catch(() => {})
   if (tab.value === 'whales') loadWhales().catch(() => {})
   if (tab.value === 'ipos') {
     loadIpos().catch(() => {})
@@ -84,6 +84,18 @@ function refreshTab() {
 watch([tab, () => state.selected], refreshTab)
 setInterval(refreshTab, 10000)
 setInterval(() => loadNews().catch(() => {}), 30000)
+const finAmount = ref('')
+const fin = computed(() => state.financing)
+async function borrow() {
+  try {
+    await requestFinancing(Math.round(Number(finAmount.value) * 100))
+    finAmount.value = ''
+    toast('أُضيف مبلغ التمويل إلى نقدك', 'good')
+  } catch (e) { toast(e.message, 'bad') }
+}
+async function repay() {
+  try { await repayFinancing(); toast('سُدّد التمويل', 'good') } catch (e) { toast(e.message, 'bad') }
+}
 const ipoQty = reactive({})
 async function subscribe(ipo) {
   if (!state.token) { state.showAuth = true; return }
@@ -126,6 +138,10 @@ onMounted(async () => {
     <button v-for="n in latestNews" :key="n.id" class="newsitem" :title="n.body" @click="n.symbol && select(n.symbol)">
       <span v-if="n.name" class="muted">{{ n.name }}:</span> {{ n.title }}
     </button>
+  </div>
+  <div v-if="fin?.financing?.margin_called || fin?.financing?.status === 'liquidating'" class="marginbar">
+    {{ fin.financing.status === 'liquidating' ? 'هامشك نزل تحت حد التسييل: تُباع أسهمك الآن لسداد التمويل.'
+      : 'تنبيه هامش: قيمة محفظتك اقتربت من حد التسييل. سدّد التمويل أو خفّف مراكزك.' }}
   </div>
   <AdminPanel v-if="view === 'admin' && isAdmin" />
   <main v-else class="grid">
@@ -214,6 +230,7 @@ onMounted(async () => {
         <button :class="{ on: tab === 'whales' }" @click="tab = 'whales'">الهوامير</button>
         <button :class="{ on: tab === 'holders' }" @click="tab = 'holders'">كبار الملاك</button>
         <button :class="{ on: tab === 'ipos' }" @click="tab = 'ipos'">الاكتتابات</button>
+        <button :class="{ on: tab === 'financing' }" @click="tab = 'financing'">التمويل</button>
         <span v-if="state.user" class="worth">صافي الثروة <b class="num">{{ money(state.netWorth) }}</b>
           · محجوز <span class="num">{{ money(state.balances.reserved) }}</span></span>
       </div>
@@ -228,6 +245,27 @@ onMounted(async () => {
           <tr v-if="!state.whales.length"><td colspan="6" class="empty">لا يوجد متداولون بعد</td></tr>
         </tbody>
       </table>
+      <div v-else-if="tab === 'financing'" class="fin">
+        <p v-if="!state.user" class="empty">سجّل الدخول لطلب تمويل.</p>
+        <template v-else-if="fin">
+          <p class="muted terms">تمويل برسم ثابت {{ (fin.terms.fee_bps / 100).toFixed(2) }}% يُعرف عند الطلب ولا يزيد، لمدة {{ fin.terms.days }} يومًا.
+            تنبيه الهامش عند {{ fin.terms.margin_call_bps / 100 }}%، والتسييل الآلي عند {{ fin.terms.liquidation_bps / 100 }}%.</p>
+          <div v-if="fin.financing" class="row">
+            <span>المبلغ <b class="num">{{ money(fin.financing.principal) }}</b></span>
+            <span>الرسم <b class="num">{{ money(fin.financing.fee) }}</b></span>
+            <span>المستحق <b class="num">{{ money(fin.debt) }}</b></span>
+            <span>الهامش <b class="num" :class="fin.financing.margin_called ? 'down' : 'up'">{{ fin.margin_bps == null ? '—' : (fin.margin_bps / 100).toFixed(1) + '%' }}</b></span>
+            <span v-if="fin.financing.status === 'liquidating'" class="down">جارٍ تسييل المحفظة لسداد التمويل</span>
+            <button class="primary small" @click="repay">سداد كامل</button>
+          </div>
+          <form v-else-if="fin.enabled" class="row" @submit.prevent="borrow">
+            <span>الحد المتاح <b class="num">{{ money(fin.limit) }}</b></span>
+            <label>المبلغ (ريال)<input v-model="finAmount" type="number" min="1" :max="fin.limit / 100" step="0.01" required dir="ltr" /></label>
+            <button class="primary small" :disabled="fin.limit <= 0">اطلب التمويل</button>
+          </form>
+          <p v-else class="empty">التمويل متوقف حاليًا.</p>
+        </template>
+      </div>
       <table v-else-if="tab === 'ipos'">
         <thead><tr><th>الشركة</th><th>سعر الطرح</th><th>المطروح</th><th>التغطية</th><th>الحالة</th><th>اكتتابي</th></tr></thead>
         <tbody>

@@ -105,6 +105,10 @@ td small { display: block; color: var(--muted); font-size: 11px; }
 .newsitem:hover { color: #fff; }
 td small.tag { display: inline; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; margin-inline-start: 6px; }
 
+.fin { padding: 12px 14px; display: grid; gap: 12px; }
+.fin .terms { margin: 0; font-size: 13px; } .fin .row b { margin-inline-start: 4px; }
+.marginbar { background: var(--down); color: #fff; padding: 6px 14px; font-weight: 600; }
+
 .admin { flex: 1; min-height: 0; padding: 8px; display: grid; gap: 8px; align-content: start; overflow-y: auto; }
 .admin .panel { overflow: visible; }
 .pad { padding: 12px 14px; gap: 12px; }
