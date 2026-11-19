@@ -91,7 +91,7 @@ func (f *fixture) int(q string, args ...any) int64 {
 }
 
 func (f *fixture) user(alias string) int64 {
-	return f.int(`INSERT INTO users (name, alias, mobile, password_hash)
+	return f.int(`INSERT INTO users (name, alias, mobile, password)
 	              VALUES ($1, $1, $1, 'x') RETURNING id`, alias)
 }
 

@@ -1,21 +1,38 @@
 -- Tadawul Virtual: phase 1 core schema (PostgreSQL 16).
 -- Money is BIGINT in halalas (1 SAR = 100 halalas). Quantities are BIGINT shares.
--- This file is the reference design; Laravel migrations will be generated from it.
+-- This file is the single source of truth for the schema. The Laravel migration
+-- in api/database/migrations loads it as is; do not add BEGIN/COMMIT here.
 
-BEGIN;
 
 CREATE TABLE users (
     id            BIGSERIAL PRIMARY KEY,
     name          TEXT        NOT NULL,
     alias         TEXT        NOT NULL UNIQUE,          -- public display name
     mobile        TEXT        NOT NULL UNIQUE,
-    password_hash TEXT        NOT NULL,
+    password      TEXT        NOT NULL,                 -- bcrypt hash
     role          TEXT        NOT NULL DEFAULT 'trader'
                   CHECK (role IN ('trader', 'moderator', 'admin', 'bot')),
     status        TEXT        NOT NULL DEFAULT 'active'
                   CHECK (status IN ('active', 'suspended', 'banned')),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- API tokens (Laravel Sanctum).
+CREATE TABLE personal_access_tokens (
+    id             BIGSERIAL PRIMARY KEY,
+    tokenable_type TEXT        NOT NULL,
+    tokenable_id   BIGINT      NOT NULL,
+    name           TEXT        NOT NULL,
+    token          VARCHAR(64) NOT NULL UNIQUE,
+    abilities      TEXT,
+    last_used_at   TIMESTAMP,
+    expires_at     TIMESTAMP,
+    created_at     TIMESTAMP,
+    updated_at     TIMESTAMP
+);
+
+CREATE INDEX personal_access_tokens_owner
+    ON personal_access_tokens (tokenable_type, tokenable_id);
 
 -- Settings the admin panel changes at runtime (starting balance, trading
 -- hours, commission, fluctuation limit, ...).
@@ -194,4 +211,3 @@ CREATE TABLE daily_stats (
     CHECK (low_limit <= prev_close AND prev_close <= high_limit)
 );
 
-COMMIT;

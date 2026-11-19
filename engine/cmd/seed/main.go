@@ -78,7 +78,7 @@ func main() {
 	}
 	for _, b := range bots {
 		must(tx.Exec(`
-			INSERT INTO users (name, alias, mobile, password_hash, role)
+			INSERT INTO users (name, alias, mobile, password, role)
 			VALUES ($1, $1, $1, '!', 'bot') ON CONFLICT (alias) DO NOTHING`, b.alias))
 		var uid int64
 		if err := tx.QueryRow(`SELECT id FROM users WHERE alias = $1`, b.alias).Scan(&uid); err != nil {
