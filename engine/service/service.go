@@ -86,7 +86,18 @@ type Engine struct {
 	refreshed time.Time
 	DepthSize int
 
+	// Ledger account ids by owner and kind. Accounts are never deleted, so an
+	// id stays valid; the cache is dropped when a batch rolls back, because an
+	// account created inside that batch no longer exists.
+	accts map[acctKey]int64
+	stmts map[string]*sql.Stmt // prepared statements by query text
+
 	testHook func(Command) error // tests only: inject a failure after a command
+}
+
+type acctKey struct {
+	user int64 // 0 for a system account
+	kind string
 }
 
 func New(db *sql.DB) *Engine {
@@ -95,6 +106,8 @@ func New(db *sql.DB) *Engine {
 		Now:       time.Now,
 		byID:      map[int64]*company{},
 		bySy:      map[string]*company{},
+		accts:     map[acctKey]int64{},
+		stmts:     map[string]*sql.Stmt{},
 		DepthSize: 10,
 	}
 }
@@ -512,6 +525,7 @@ func (e *Engine) ProcessBatch(ctx context.Context, cmds []Command) ([]Event, err
 	}
 	touched := map[*company]bool{}
 	fail := func(err error) ([]Event, error) {
+		e.accts = map[acctKey]int64{}
 		for c := range touched {
 			if rerr := e.reloadBook(ctx, c); rerr != nil {
 				return nil, fmt.Errorf("%w (and reload of %s failed: %v)", err, c.symbol, rerr)
@@ -619,67 +633,98 @@ func (e *Engine) processNew(ctx context.Context, tx *sql.Tx, cmd Command, touche
 		return []Event{reject(cmd, "fok_not_filled")}, nil
 	}
 
-	var active bool
-	err := tx.QueryRowContext(ctx,
-		`SELECT status = 'active' FROM users WHERE id = $1`, cmd.UserID).Scan(&active)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && !active) {
-		return []Event{reject(cmd, "unknown_user")}, nil
+	// The first order from a user creates their ledger accounts, which needs
+	// the user to exist. After that the ids come from memory.
+	_, haveCash := e.accts[acctKey{cmd.UserID, "cash"}]
+	_, haveHeld := e.accts[acctKey{cmd.UserID, "reserved"}]
+	if !haveCash || !haveHeld {
+		var known bool
+		if err := e.row(ctx, tx,
+			`SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND status = 'active')`, cmd.UserID).Scan(&known); err != nil {
+			return nil, err
+		}
+		if !known {
+			return []Event{reject(cmd, "unknown_user")}, nil
+		}
 	}
+	cash, err := e.account(ctx, tx, cmd.UserID, "cash")
+	if err != nil {
+		return nil, err
+	}
+	heldAcct, err := e.account(ctx, tx, cmd.UserID, "reserved")
 	if err != nil {
 		return nil, err
 	}
 
-	var existing int64
-	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM orders WHERE user_id = $1 AND idempotency_key = $2`, cmd.UserID, cmd.Key).Scan(&existing)
-	if err == nil {
-		return nil, nil // already processed: do nothing
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
-	}
-
-	// Hold what the order could cost at its worst price, commission included
-	// (buy), or the shares (sell), before it can match.
-	var reserved int64
-	if o.Side == book.Buy {
-		reserved = worst*o.Qty + e.fee(worst*o.Qty)
-		ok, err := e.reserveCash(ctx, tx, cmd.UserID, reserved)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return []Event{reject(cmd, "insufficient_funds")}, nil
-		}
-	} else {
-		res, err := tx.ExecContext(ctx, `
-			UPDATE positions SET reserved_qty = reserved_qty + $1
-			WHERE user_id = $2 AND company_id = $3 AND qty - reserved_qty >= $1`,
-			o.Qty, cmd.UserID, c.id)
-		if err != nil {
-			return nil, err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return []Event{reject(cmd, "insufficient_shares")}, nil
-		}
-	}
-
-	var orderID int64
 	var price, reserve sql.NullInt64
 	if o.Kind == book.Limit {
 		price = sql.NullInt64{Int64: o.Price, Valid: true}
 	}
+
+	// One statement checks the user and the idempotency key, holds what the
+	// order could cost at its worst price with commission (buy) or the shares
+	// (sell), and stores the order. Nothing is written unless all of it holds.
+	var active sql.NullBool
+	var existing, newID sql.NullInt64
+	var reserved int64
 	if o.Side == book.Buy {
+		reserved = worst*o.Qty + e.fee(worst*o.Qty)
 		reserve = sql.NullInt64{Int64: worst, Valid: true}
+		err = e.row(ctx, tx, `
+			WITH chk AS (
+				SELECT (SELECT status = 'active' FROM users WHERE id = $1::bigint) AS active,
+				       (SELECT id FROM orders WHERE user_id = $1::bigint AND idempotency_key = $2::text) AS existing),
+			taken AS (
+				UPDATE ledger_accounts SET balance = balance - $5::bigint
+				WHERE id = $3::bigint AND balance >= $5::bigint
+				  AND (SELECT active AND existing IS NULL FROM chk) RETURNING id),
+			held AS (
+				UPDATE ledger_accounts SET balance = balance + $5::bigint
+				WHERE id = $4::bigint AND EXISTS (SELECT 1 FROM taken) RETURNING id),
+			entry AS (
+				INSERT INTO ledger_entries (debit_account_id, credit_account_id, amount, ref_type, ref_id)
+				SELECT $3::bigint, $4::bigint, $5::bigint, 'order_reserve', 0 WHERE EXISTS (SELECT 1 FROM taken)),
+			ins AS (
+				INSERT INTO orders (user_id, company_id, side, kind, price, qty, reserve_price, reserved_amount,
+				                    status, time_in_force, idempotency_key)
+				SELECT $1::bigint, $6::bigint, 'buy', $7::text, $8::bigint, $9::bigint, $10::bigint, $5::bigint,
+				       'open', $11::text, $2::text
+				WHERE EXISTS (SELECT 1 FROM taken) RETURNING id)
+			SELECT chk.active, chk.existing, (SELECT id FROM ins) FROM chk`,
+			cmd.UserID, cmd.Key, cash, heldAcct, reserved, c.id, cmd.Kind, price, o.Qty, reserve, tif,
+		).Scan(&active, &existing, &newID)
+	} else {
+		err = e.row(ctx, tx, `
+			WITH chk AS (
+				SELECT (SELECT status = 'active' FROM users WHERE id = $1::bigint) AS active,
+				       (SELECT id FROM orders WHERE user_id = $1::bigint AND idempotency_key = $2::text) AS existing),
+			res AS (
+				UPDATE positions SET reserved_qty = reserved_qty + $3::bigint
+				WHERE user_id = $1::bigint AND company_id = $4::bigint AND qty - reserved_qty >= $3::bigint
+				  AND (SELECT active AND existing IS NULL FROM chk) RETURNING user_id),
+			ins AS (
+				INSERT INTO orders (user_id, company_id, side, kind, price, qty, reserved_amount,
+				                    status, time_in_force, idempotency_key)
+				SELECT $1::bigint, $4::bigint, 'sell', $5::text, $6::bigint, $3::bigint, 0, 'open', $7::text, $2::text
+				WHERE EXISTS (SELECT 1 FROM res) RETURNING id)
+			SELECT chk.active, chk.existing, (SELECT id FROM ins) FROM chk`,
+			cmd.UserID, cmd.Key, o.Qty, c.id, cmd.Kind, price, tif,
+		).Scan(&active, &existing, &newID)
 	}
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO orders (user_id, company_id, side, kind, price, qty, reserve_price, reserved_amount,
-		                    status, time_in_force, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', $9, $10) RETURNING id`,
-		cmd.UserID, c.id, cmd.Side, cmd.Kind, price, o.Qty, reserve, reserved, tif, cmd.Key).Scan(&orderID)
 	if err != nil {
 		return nil, err
 	}
+	switch {
+	case !active.Bool:
+		return []Event{reject(cmd, "unknown_user")}, nil
+	case existing.Valid:
+		return nil, nil // already processed: do nothing
+	case !newID.Valid && o.Side == book.Buy:
+		return []Event{reject(cmd, "insufficient_funds")}, nil
+	case !newID.Valid:
+		return []Event{reject(cmd, "insufficient_shares")}, nil
+	}
+	orderID := newID.Int64
 	o.ID = uint64(orderID)
 
 	// From here the book changes: a later failure must rebuild it.
@@ -688,16 +733,17 @@ func (e *Engine) processNew(ctx context.Context, tx *sql.Tx, cmd Command, touche
 	if err != nil {
 		return nil, fmt.Errorf("submit after validate: %w", err)
 	}
-	return e.settle(ctx, tx, c, cmd, o, orderID, res)
+	return e.settle(ctx, tx, c, cmd, o, orderID, reserved, res)
 }
 
 func (e *Engine) settle(ctx context.Context, tx *sql.Tx, c *company, cmd Command, o book.Order,
-	orderID int64, res book.Result) ([]Event, error) {
+	orderID, reserved int64, res book.Result) ([]Event, error) {
 
 	commission, err := e.systemAccount(ctx, tx, "sys_commission")
 	if err != nil {
 		return nil, err
 	}
+	initial := reserved // what the order held when it was stored
 	var events []Event
 	var filled int64
 	for _, t := range res.Trades {
@@ -706,102 +752,105 @@ func (e *Engine) settle(ctx context.Context, tx *sql.Tx, c *company, cmd Command
 		buyOrder, sellOrder := int64(t.BuyOrderID), int64(t.SellOrderID)
 		value := t.Price * t.Qty
 		fee := e.fee(value)
-
-		var tradeID int64
-		err := tx.QueryRowContext(ctx, `
-			INSERT INTO trades (company_id, buy_order_id, sell_order_id, buy_user_id, sell_user_id,
-			                    price, qty, taker_side)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-			c.id, buyOrder, sellOrder, buyer, seller, t.Price, t.Qty, sideName(t.TakerSide)).Scan(&tradeID)
-		if err != nil {
-			return nil, err
-		}
-
-		// Cash: the trade value goes from the buyer's held cash to the
-		// seller, and each side pays the commission on that value.
-		if err := e.transfer(ctx, tx, buyer, "reserved", seller, "cash", value, "trade", tradeID); err != nil {
-			return nil, err
-		}
-		if fee > 0 {
-			buyerHeld, err := e.account(ctx, tx, buyer, "reserved")
-			if err != nil {
-				return nil, err
-			}
-			sellerCash, err := e.account(ctx, tx, seller, "cash")
-			if err != nil {
-				return nil, err
-			}
-			if err := moveMoney(ctx, tx, buyerHeld, commission, fee, "commission", tradeID); err != nil {
-				return nil, err
-			}
-			if err := moveMoney(ctx, tx, sellerCash, commission, fee, "commission", tradeID); err != nil {
-				return nil, err
-			}
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE orders SET reserved_amount = reserved_amount - $1 WHERE id = $2`, value+fee, buyOrder); err != nil {
-			return nil, err
-		}
-
-		// Shares: out of the seller's reserved position, into the buyer's.
-		r, err := tx.ExecContext(ctx, `
-			UPDATE positions
-			SET cost_total = cost_total - (cost_total * $1 / qty),
-			    qty = qty - $1, reserved_qty = reserved_qty - $1
-			WHERE user_id = $2 AND company_id = $3 AND reserved_qty >= $1`,
-			t.Qty, seller, c.id)
-		if err != nil {
-			return nil, err
-		}
-		if n, _ := r.RowsAffected(); n != 1 {
-			return nil, fmt.Errorf("seller %d has no reserved shares for trade", seller)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO positions (user_id, company_id, qty, cost_total) VALUES ($1, $2, $3, $4)
-			ON CONFLICT (user_id, company_id)
-			DO UPDATE SET qty = positions.qty + EXCLUDED.qty,
-			              cost_total = positions.cost_total + EXCLUDED.cost_total`,
-			buyer, c.id, t.Qty, value); err != nil {
-			return nil, err
+		if o.Side == book.Buy {
+			reserved -= value + fee // paid out of what this order holds
 		}
 
 		restingOrder := buyOrder
 		if t.TakerSide == book.Buy {
 			restingOrder = sellOrder
 		}
-		var restStatus, restSide string
-		var restFilled, restUser int64
-		err = tx.QueryRowContext(ctx, `
-			UPDATE orders
-			SET filled_qty = filled_qty + $1,
-			    status = CASE WHEN filled_qty + $1 >= qty THEN 'filled' ELSE 'partial' END,
-			    updated_at = now()
-			WHERE id = $2 RETURNING status, filled_qty, user_id, side`,
-			t.Qty, restingOrder).Scan(&restStatus, &restFilled, &restUser, &restSide)
+		buyerHeld, err := e.account(ctx, tx, buyer, "reserved")
 		if err != nil {
 			return nil, err
 		}
-		if restStatus == "filled" { // give back anything still held for it
-			if err := e.release(ctx, tx, restUser, c.id, restSide, 0, restingOrder); err != nil {
-				return nil, err
-			}
+		sellerCash, err := e.account(ctx, tx, seller, "cash")
+		if err != nil {
+			return nil, err
 		}
 
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO candles (company_id, interval, bucket, open, high, low, close, volume)
-			VALUES ($1, '1m', date_trunc('minute', now()), $2, $2, $2, $2, $3)
-			ON CONFLICT (company_id, interval, bucket)
-			DO UPDATE SET high = GREATEST(candles.high, EXCLUDED.high),
-			              low = LEAST(candles.low, EXCLUDED.low),
-			              close = EXCLUDED.close,
-			              volume = candles.volume + EXCLUDED.volume`,
-			c.id, t.Price, t.Qty); err != nil {
+		// The whole trade in one statement: the trade row; cash from the
+		// buyer's held money to the seller with commission from each side;
+		// shares out of the seller's reserved position into the buyer's; the
+		// resting order's progress; the candle and the day's volume.
+		var restStatus, restSide string
+		var restFilled, restUser, restHeld, sold, balances int64
+		err = e.row(ctx, tx, `
+			WITH tr AS (
+				INSERT INTO trades (company_id, buy_order_id, sell_order_id, buy_user_id, sell_user_id,
+				                    price, qty, taker_side)
+				VALUES ($1::bigint, $2::bigint, $3::bigint, $4::bigint, $5::bigint, $6::bigint, $7::bigint, $8::text)
+				RETURNING id),
+			bal AS (
+				UPDATE ledger_accounts
+				SET balance = balance + CASE id WHEN $9::bigint THEN -($12::bigint + $13::bigint)
+				                                WHEN $10::bigint THEN $12::bigint - $13::bigint
+				                                ELSE 2 * $13::bigint END
+				WHERE id IN ($9::bigint, $10::bigint, $11::bigint) RETURNING id),
+			ent AS (
+				INSERT INTO ledger_entries (debit_account_id, credit_account_id, amount, ref_type, ref_id)
+				SELECT x.d, x.c, x.amount, x.kind, tr.id
+				FROM tr, (VALUES ($9::bigint, $10::bigint, $12::bigint, 'trade'),
+				                 ($9::bigint, $11::bigint, $13::bigint, 'commission'),
+				                 ($10::bigint, $11::bigint, $13::bigint, 'commission')) AS x (d, c, amount, kind)
+				WHERE x.amount > 0),
+			ps AS (
+				UPDATE positions
+				SET cost_total = cost_total - (cost_total * $7::bigint / qty),
+				    qty = qty - $7::bigint, reserved_qty = reserved_qty - $7::bigint
+				WHERE user_id = $5::bigint AND company_id = $1::bigint AND reserved_qty >= $7::bigint
+				RETURNING user_id),
+			pb AS (
+				INSERT INTO positions (user_id, company_id, qty, cost_total)
+				VALUES ($4::bigint, $1::bigint, $7::bigint, $12::bigint)
+				ON CONFLICT (user_id, company_id)
+				DO UPDATE SET qty = positions.qty + EXCLUDED.qty,
+				              cost_total = positions.cost_total + EXCLUDED.cost_total),
+			cd AS (
+				INSERT INTO candles (company_id, interval, bucket, open, high, low, close, volume)
+				VALUES ($1::bigint, '1m', date_trunc('minute', now()), $6::bigint, $6::bigint, $6::bigint, $6::bigint, $7::bigint)
+				ON CONFLICT (company_id, interval, bucket)
+				DO UPDATE SET high = GREATEST(candles.high, EXCLUDED.high),
+				              low = LEAST(candles.low, EXCLUDED.low),
+				              close = EXCLUDED.close,
+				              volume = candles.volume + EXCLUDED.volume),
+			ds AS (
+				UPDATE daily_stats SET volume = volume + $7::bigint
+				WHERE company_id = $1::bigint AND trade_date = $15::date),
+			o AS (SELECT reserved_amount FROM orders WHERE id = $14::bigint FOR UPDATE),
+			ro AS (
+				UPDATE orders
+				SET filled_qty = orders.filled_qty + $7::bigint,
+				    status = CASE WHEN orders.filled_qty + $7::bigint >= orders.qty THEN 'filled' ELSE 'partial' END,
+				    -- a resting buy pays this trade out of what it holds; once
+				    -- filled, whatever is left is returned below
+				    reserved_amount = CASE WHEN orders.side <> 'buy' THEN orders.reserved_amount
+				                           WHEN orders.filled_qty + $7::bigint >= orders.qty THEN 0
+				                           ELSE orders.reserved_amount - ($12::bigint + $13::bigint) END,
+				    updated_at = now()
+				FROM o WHERE orders.id = $14::bigint
+				RETURNING orders.status, orders.filled_qty, orders.user_id, orders.side, o.reserved_amount AS held)
+			SELECT ro.status, ro.filled_qty, ro.user_id, ro.side, ro.held,
+			       (SELECT count(*) FROM ps), (SELECT count(*) FROM bal)
+			FROM ro`,
+			c.id, buyOrder, sellOrder, buyer, seller, t.Price, t.Qty, sideName(t.TakerSide),
+			buyerHeld, sellerCash, commission, value, fee, restingOrder, e.day,
+		).Scan(&restStatus, &restFilled, &restUser, &restSide, &restHeld, &sold, &balances)
+		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE daily_stats SET volume = volume + $1 WHERE company_id = $2 AND trade_date = $3::date`,
-			t.Qty, c.id, e.day); err != nil {
-			return nil, err
+		if sold != 1 {
+			return nil, fmt.Errorf("seller %d has no reserved shares for trade", seller)
+		}
+		if balances != 3 {
+			return nil, fmt.Errorf("trade money between accounts %d and %d did not apply", buyerHeld, sellerCash)
+		}
+		// A resting buy that is now filled gets back anything still held for it.
+		if restStatus == "filled" && restSide == "buy" {
+			left := restHeld - (value + fee)
+			if err := e.transfer(ctx, tx, restUser, "reserved", restUser, "cash", left, "reserve_release", restingOrder); err != nil {
+				return nil, err
+			}
 		}
 
 		events = append(events,
@@ -824,33 +873,38 @@ func (e *Engine) settle(ctx context.Context, tx *sql.Tx, c *company, cmd Command
 	if res.Rested > 0 {
 		restPrice = sql.NullInt64{Int64: res.RestPrice, Valid: true}
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE orders SET filled_qty = $1, status = $2, price = COALESCE($3, price), updated_at = now()
-		WHERE id = $4`, filled, status, restPrice, orderID); err != nil {
-		return nil, err
+	// What the order keeps held from here on: a buy that stays in the book
+	// keeps only what its remainder can still cost; anything else keeps nothing.
+	ended := status == "filled" || status == "cancelled"
+	var keep int64
+	if o.Side == book.Buy && res.Rested > 0 {
+		keep = min(reserved, res.Rested*res.RestPrice+e.fee(res.Rested*res.RestPrice))
 	}
-	if status == "filled" || status == "cancelled" {
-		if err := e.release(ctx, tx, cmd.UserID, c.id, cmd.Side, res.Cancelled, orderID); err != nil {
+	// A limit order that simply rests is already stored exactly as it is.
+	if status != "open" || o.Kind != book.Limit || keep != initial {
+		if _, err := e.exec(ctx, tx, `
+			UPDATE orders SET filled_qty = $1, status = $2, price = COALESCE($3, price),
+			                  reserved_amount = $4, updated_at = now()
+			WHERE id = $5`, filled, status, restPrice, keep, orderID); err != nil {
 			return nil, err
 		}
 	}
-	// A buy order that stays in the book keeps held only what its remainder
-	// can still cost. Whatever better prices saved comes back at once.
-	if res.Rested > 0 && o.Side == book.Buy {
-		need := res.Rested*res.RestPrice + e.fee(res.Rested*res.RestPrice)
-		var held int64
-		if err := tx.QueryRowContext(ctx,
-			`SELECT reserved_amount FROM orders WHERE id = $1 FOR UPDATE`, orderID).Scan(&held); err != nil {
+	// Cash the order no longer needs comes back at once: what better prices
+	// saved, and everything left when the order has ended.
+	if o.Side == book.Buy && reserved > keep {
+		ref := "reserve_refund"
+		if ended {
+			ref = "reserve_release"
+		}
+		if err := e.transfer(ctx, tx, cmd.UserID, "reserved", cmd.UserID, "cash", reserved-keep, ref, orderID); err != nil {
 			return nil, err
 		}
-		if held > need {
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE orders SET reserved_amount = $1 WHERE id = $2`, need, orderID); err != nil {
-				return nil, err
-			}
-			if err := e.transfer(ctx, tx, cmd.UserID, "reserved", cmd.UserID, "cash", held-need, "reserve_refund", orderID); err != nil {
-				return nil, err
-			}
+	}
+	if o.Side == book.Sell && ended && res.Cancelled > 0 {
+		if _, err := e.exec(ctx, tx, `
+			UPDATE positions SET reserved_qty = reserved_qty - $1 WHERE user_id = $2 AND company_id = $3`,
+			res.Cancelled, cmd.UserID, c.id); err != nil {
+			return nil, err
 		}
 	}
 	ev := Event{Type: "order", Symbol: c.symbol, UserID: cmd.UserID, OrderID: orderID, Key: cmd.Key,
@@ -862,23 +916,36 @@ func (e *Engine) settle(ctx context.Context, tx *sql.Tx, c *company, cmd Command
 }
 
 func (e *Engine) processCancel(ctx context.Context, tx *sql.Tx, cmd Command, touched map[*company]bool) ([]Event, error) {
-	var user, companyID int64
-	var side, status string
-	err := tx.QueryRowContext(ctx, `
-		SELECT user_id, company_id, side, status FROM orders WHERE id = $1`,
-		cmd.OrderID).Scan(&user, &companyID, &side, &status)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && user != cmd.UserID) {
-		return []Event{reject(cmd, "unknown_order")}, nil
+	// Mark the order cancelled and take back what it holds in one statement.
+	// It only applies to the owner's order while it is still open.
+	user := cmd.UserID
+	var companyID, filled, held int64
+	var side string
+	err := e.row(ctx, tx, `
+		WITH o AS (
+			SELECT id, reserved_amount FROM orders
+			WHERE id = $1 AND user_id = $2 AND status IN ('open', 'partial') FOR UPDATE)
+		UPDATE orders SET status = 'cancelled', reserved_amount = 0, updated_at = now()
+		FROM o WHERE orders.id = o.id
+		RETURNING orders.company_id, orders.side, orders.filled_qty, o.reserved_amount`,
+		cmd.OrderID, cmd.UserID).Scan(&companyID, &side, &filled, &held)
+	if errors.Is(err, sql.ErrNoRows) {
+		var owner int64
+		err := e.row(ctx, tx, `SELECT user_id FROM orders WHERE id = $1`, cmd.OrderID).Scan(&owner)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && owner != cmd.UserID) {
+			return []Event{reject(cmd, "unknown_order")}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return []Event{reject(cmd, "not_open")}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if status != "open" && status != "partial" {
-		return []Event{reject(cmd, "not_open")}, nil
-	}
 	c := e.byID[companyID]
 	if c == nil {
-		return []Event{reject(cmd, "unknown_symbol")}, nil
+		return nil, fmt.Errorf("order %d belongs to a company the engine has not loaded", cmd.OrderID)
 	}
 	touched[c] = true
 	released, err := c.book.Cancel(uint64(cmd.OrderID))
@@ -887,13 +954,14 @@ func (e *Engine) processCancel(ctx context.Context, tx *sql.Tx, cmd Command, tou
 		// batch rebuilds the book from the database before the retry.
 		return nil, fmt.Errorf("order %d is open in the database but not in the book", cmd.OrderID)
 	}
-	var filled int64
-	if err := tx.QueryRowContext(ctx, `
-		UPDATE orders SET status = 'cancelled', updated_at = now() WHERE id = $1 RETURNING filled_qty`,
-		cmd.OrderID).Scan(&filled); err != nil {
-		return nil, err
+	if side == "buy" {
+		err = e.transfer(ctx, tx, user, "reserved", user, "cash", held, "reserve_release", cmd.OrderID)
+	} else if released > 0 {
+		_, err = e.exec(ctx, tx, `
+			UPDATE positions SET reserved_qty = reserved_qty - $1 WHERE user_id = $2 AND company_id = $3`,
+			released, user, c.id)
 	}
-	if err := e.release(ctx, tx, user, c.id, side, released, cmd.OrderID); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	return []Event{{Type: "order", Symbol: c.symbol, UserID: user, OrderID: cmd.OrderID,
@@ -906,45 +974,59 @@ func (e *Engine) release(ctx context.Context, tx *sql.Tx, user, companyID int64,
 	unsoldQty, orderID int64) error {
 	if side == "buy" {
 		var held int64
-		if err := tx.QueryRowContext(ctx,
-			`SELECT reserved_amount FROM orders WHERE id = $1 FOR UPDATE`, orderID).Scan(&held); err != nil {
+		if err := e.row(ctx, tx, `
+			WITH o AS (SELECT reserved_amount FROM orders WHERE id = $1 FOR UPDATE)
+			UPDATE orders SET reserved_amount = 0 FROM o WHERE id = $1 RETURNING o.reserved_amount`,
+			orderID).Scan(&held); err != nil {
 			return err
 		}
 		if held <= 0 {
 			return nil
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE orders SET reserved_amount = 0 WHERE id = $1`, orderID); err != nil {
-			return err
 		}
 		return e.transfer(ctx, tx, user, "reserved", user, "cash", held, "reserve_release", orderID)
 	}
 	if unsoldQty <= 0 {
 		return nil
 	}
-	_, err := tx.ExecContext(ctx, `
+	_, err := e.exec(ctx, tx, `
 		UPDATE positions SET reserved_qty = reserved_qty - $1 WHERE user_id = $2 AND company_id = $3`,
 		unsoldQty, user, companyID)
 	return err
 }
 
 func (e *Engine) systemAccount(ctx context.Context, tx *sql.Tx, kind string) (int64, error) {
+	key := acctKey{0, kind}
+	if id, ok := e.accts[key]; ok {
+		return id, nil
+	}
 	var id int64
-	err := tx.QueryRowContext(ctx,
+	err := e.row(ctx, tx,
 		`SELECT id FROM ledger_accounts WHERE user_id IS NULL AND kind = $1`, kind).Scan(&id)
+	if err == nil {
+		e.accts[key] = id
+	}
 	return id, err
 }
 
+// account returns the id of a user's ledger account, creating it on first use.
 func (e *Engine) account(ctx context.Context, tx *sql.Tx, user int64, kind string) (int64, error) {
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO ledger_accounts (user_id, kind) VALUES ($1, $2)
-		ON CONFLICT (user_id, kind) DO NOTHING`, user, kind); err != nil {
-		return 0, err
+	key := acctKey{user, kind}
+	if id, ok := e.accts[key]; ok {
+		return id, nil
 	}
 	var id int64
-	if err := tx.QueryRowContext(ctx,
-		`SELECT id FROM ledger_accounts WHERE user_id = $1 AND kind = $2`, user, kind).Scan(&id); err != nil {
+	err := e.row(ctx, tx, `
+		WITH ins AS (
+			INSERT INTO ledger_accounts (user_id, kind) VALUES ($1, $2)
+			ON CONFLICT (user_id, kind) DO NOTHING RETURNING id)
+		SELECT id FROM ins
+		UNION ALL
+		SELECT id FROM ledger_accounts WHERE user_id = $1 AND kind = $2
+		LIMIT 1`, user, kind).Scan(&id)
+	if err != nil {
 		return 0, err
 	}
+	e.accts[key] = id
 	return id, nil
 }
 
@@ -963,22 +1045,67 @@ func (e *Engine) transfer(ctx context.Context, tx *sql.Tx, fromUser int64, fromK
 	if err != nil {
 		return err
 	}
-	return moveMoney(ctx, tx, from, to, amount, refType, refID)
+	return e.move(ctx, tx, from, to, amount, refType, refID)
 }
 
-func moveMoney(ctx context.Context, tx *sql.Tx, from, to, amount int64, refType string, refID int64) error {
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE ledger_accounts SET balance = balance - $1 WHERE id = $2`, amount, from); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE ledger_accounts SET balance = balance + $1 WHERE id = $2`, amount, to); err != nil {
-		return err
-	}
-	_, err := tx.ExecContext(ctx, `
+// moveMoneySQL changes both balances and writes the ledger entry in one statement.
+const moveMoneySQL = `
+		WITH moved AS (
+			UPDATE ledger_accounts
+			SET balance = balance + CASE WHEN id = $1::bigint THEN -$3::bigint ELSE $3::bigint END
+			WHERE id IN ($1::bigint, $2::bigint) RETURNING id)
 		INSERT INTO ledger_entries (debit_account_id, credit_account_id, amount, ref_type, ref_id)
-		VALUES ($1, $2, $3, $4, $5)`, from, to, amount, refType, refID)
-	return err
+		SELECT $1::bigint, $2::bigint, $3::bigint, $4, $5::bigint WHERE (SELECT count(*) FROM moved) = 2`
+
+func moveMoney(ctx context.Context, tx *sql.Tx, from, to, amount int64, refType string, refID int64) error {
+	res, err := tx.ExecContext(ctx, moveMoneySQL, from, to, amount, refType, refID)
+	return moved(res, err, from, to)
+}
+
+// move is moveMoney through the engine's prepared statements.
+func (e *Engine) move(ctx context.Context, tx *sql.Tx, from, to, amount int64, refType string, refID int64) error {
+	res, err := e.exec(ctx, tx, moveMoneySQL, from, to, amount, refType, refID)
+	return moved(res, err, from, to)
+}
+
+func moved(res sql.Result, err error, from, to int64) error {
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("money move between accounts %d and %d did not apply", from, to)
+	}
+	return nil
+}
+
+// stmt returns the statement prepared once for this query text, bound to tx.
+// Preparing lets PostgreSQL plan each statement once instead of on every call.
+func (e *Engine) stmt(ctx context.Context, tx *sql.Tx, query string) (*sql.Stmt, error) {
+	st, ok := e.stmts[query]
+	if !ok {
+		var err error
+		if st, err = e.db.PrepareContext(ctx, query); err != nil {
+			return nil, err
+		}
+		e.stmts[query] = st
+	}
+	return tx.StmtContext(ctx, st), nil
+}
+
+func (e *Engine) row(ctx context.Context, tx *sql.Tx, query string, args ...any) *sql.Row {
+	st, err := e.stmt(ctx, tx, query)
+	if err != nil {
+		return tx.QueryRowContext(ctx, query, args...) // reports the same error when scanned
+	}
+	return st.QueryRowContext(ctx, args...)
+}
+
+func (e *Engine) exec(ctx context.Context, tx *sql.Tx, query string, args ...any) (sql.Result, error) {
+	st, err := e.stmt(ctx, tx, query)
+	if err != nil {
+		return nil, err
+	}
+	return st.ExecContext(ctx, args...)
 }
 
 // reserveCash moves amount from the user's cash to their reserved account.
@@ -992,15 +1119,24 @@ func (e *Engine) reserveCash(ctx context.Context, tx *sql.Tx, user, amount int64
 	if err != nil {
 		return false, err
 	}
-	var balance int64
-	if err := tx.QueryRowContext(ctx,
-		`SELECT balance FROM ledger_accounts WHERE id = $1 FOR UPDATE`, cash).Scan(&balance); err != nil {
+	// Take the cash only if there is enough, add it to the held account and
+	// write the ledger entry, all in one statement.
+	res, err := e.exec(ctx, tx, `
+		WITH taken AS (
+			UPDATE ledger_accounts SET balance = balance - $3::bigint
+			WHERE id = $1::bigint AND balance >= $3::bigint RETURNING id),
+		held AS (
+			UPDATE ledger_accounts SET balance = balance + $3::bigint
+			WHERE id = $2::bigint AND EXISTS (SELECT 1 FROM taken) RETURNING id)
+		INSERT INTO ledger_entries (debit_account_id, credit_account_id, amount, ref_type, ref_id)
+		SELECT $1::bigint, $2::bigint, $3::bigint, 'order_reserve', 0
+		WHERE EXISTS (SELECT 1 FROM taken) AND EXISTS (SELECT 1 FROM held)`,
+		cash, reserved, amount)
+	if err != nil {
 		return false, err
 	}
-	if balance < amount {
-		return false, nil
-	}
-	return true, moveMoney(ctx, tx, cash, reserved, amount, "order_reserve", 0)
+	n, _ := res.RowsAffected()
+	return n == 1, nil
 }
 
 func (e *Engine) bookEvent(c *company) Event {
