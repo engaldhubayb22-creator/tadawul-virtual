@@ -1,0 +1,49 @@
+# Copies the code to the server and rebuilds the stack there.
+# Needs one repository secret, DEPLOY_SSH_KEY: the private key whose public
+# half was added to the server. See deploy/README.md.
+name: Deploy
+
+on:
+  push:
+    branches: [phase-1]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  DEPLOY_HOST: ${{ vars.DEPLOY_HOST || '138.68.89.104' }}
+  DEPLOY_USER: ${{ vars.DEPLOY_USER || 'root' }}
+  DEPLOY_PATH: /opt/tadawul-virtual
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$SSH_KEY" ]; then
+            echo "::error::The DEPLOY_SSH_KEY secret is not set. See deploy/README.md."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Copy the code
+        run: |
+          ssh -i ~/.ssh/deploy "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
+          rsync -az --delete --exclude .git --exclude deploy/.env \
+            -e "ssh -i ~/.ssh/deploy" ./ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Build and start on the server
+        run: |
+          ssh -i ~/.ssh/deploy "$DEPLOY_USER@$DEPLOY_HOST" \
+            "PUBLIC_HOST='$DEPLOY_HOST' bash '$DEPLOY_PATH/deploy/server-deploy.sh'"
