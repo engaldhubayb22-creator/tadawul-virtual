@@ -29,11 +29,25 @@ const big = (h) => {
   return sar >= 1e9 ? (sar / 1e9).toFixed(2) + ' مليار' : sar >= 1e6 ? (sar / 1e6).toFixed(2) + ' مليون' : money(h)
 }
 const ratio = (x) => (x == null ? '—' : (x / 100).toFixed(2))
-const tab = ref('orders')
 const forumSymbol = ref(false) // forum filter: false = all threads, true = only the selected company
-const view = ref('trade') // 'trade' or 'admin'
 const isAdmin = computed(() => state.user?.role === 'admin')
-watch(isAdmin, (a) => { if (!a) view.value = 'trade' })
+
+// ---- pages. A visitor sees the market and the public pages only: trading,
+// the portfolio and financing appear after signing in.
+const page = ref('market')
+const pages = computed(() => [
+  { id: 'market', label: 'السوق' },
+  ...(state.user ? [{ id: 'portfolio', label: 'محفظتي' }, { id: 'financing', label: 'التمويل' }] : []),
+  { id: 'ipos', label: 'الاكتتابات' },
+  { id: 'whales', label: 'الهوامير' },
+  { id: 'forum', label: 'المنتدى' },
+  ...(isAdmin.value ? [{ id: 'admin', label: 'لوحة الإدارة' }] : []),
+])
+watch(pages, (list) => { if (!list.some((p) => p.id === page.value)) page.value = 'market' })
+function show(symbol) { select(symbol); page.value = 'market' }
+// Panel under the chart on the market page: my open orders or the top holders.
+const tab = ref('holders')
+watch(() => state.user, (u) => { tab.value = u ? 'orders' : 'holders' })
 
 // ---- market clock (Riyadh time)
 const now = ref(Date.now())
@@ -63,6 +77,7 @@ const estimate = computed(() => {
 
 function pick(price, side) {
   ticket.kind = 'limit'
+  if (!state.user) return
   ticket.price = (price / 100).toFixed(2)
   if (side) ticket.side = side
 }
@@ -101,17 +116,18 @@ const reloadThreads = () => loadThreads(forumSymbol.value ? state.selected : '')
 function refreshTab() {
   // Allocations and refunds change the account without any order event, so
   // the account tabs reload on their own too.
-  if (state.token && ['orders', 'positions', 'ipos', 'financing'].includes(tab.value)) loadAccount().catch(() => {})
-  if (tab.value === 'whales') loadWhales().catch(() => {})
-  if (tab.value === 'forum' && !state.thread) reloadThreads()
-  if (tab.value === 'ipos') {
+  const on = page.value
+  if (state.token && ['market', 'portfolio', 'ipos', 'financing'].includes(on)) loadAccount().catch(() => {})
+  if (on === 'whales') loadWhales().catch(() => {})
+  if (on === 'forum' && !state.thread) reloadThreads()
+  if (on === 'ipos') {
     loadIpos().catch(() => {})
     // A listed IPO adds a company to the market: pick it up.
     if (state.ipos.some((i) => i.status === 'listed' && !state.companies[i.symbol])) loadMarket().catch(() => {})
   }
-  if (tab.value === 'holders' && state.selected) loadHolders(state.selected).catch(() => {})
+  if (on === 'market' && tab.value === 'holders' && state.selected) loadHolders(state.selected).catch(() => {})
 }
-watch([tab, () => state.selected, forumSymbol], refreshTab)
+watch([page, tab, () => state.selected, forumSymbol], refreshTab)
 setInterval(refreshTab, 10000)
 setInterval(() => loadNews().catch(() => {}), 30000)
 // ---- chat
@@ -187,18 +203,19 @@ onMounted(async () => {
       <span class="pill" :class="state.connected ? 'good' : 'bad'">{{ state.connected ? 'بث مباشر' : 'يعيد الاتصال…' }}</span>
       <template v-if="state.user">
         <span class="cash">النقد <b class="num">{{ money(state.balances.cash) }}</b></span>
-        <button v-if="isAdmin" class="small" :class="{ primary: view === 'admin' }" @click="view = view === 'admin' ? 'trade' : 'admin'">
-          {{ view === 'admin' ? 'شاشة التداول' : 'لوحة الإدارة' }}</button>
         <span class="alias">{{ state.user.alias }}</span>
         <button class="ghost" @click="logout()">خروج</button>
       </template>
       <button v-else class="primary small" @click="state.showAuth = true">دخول / تسجيل</button>
     </div>
   </header>
+  <nav class="nav">
+    <button v-for="p in pages" :key="p.id" :class="{ on: page === p.id }" @click="page = p.id">{{ p.label }}</button>
+  </nav>
 
-  <div v-if="latestNews.length && view === 'trade'" class="newsbar">
+  <div v-if="latestNews.length && page === 'market'" class="newsbar">
     <b>الأخبار</b>
-    <button v-for="n in latestNews" :key="n.id" class="newsitem" :title="n.body" @click="n.symbol && select(n.symbol)">
+    <button v-for="n in latestNews" :key="n.id" class="newsitem" :title="n.body" @click="n.symbol && show(n.symbol)">
       <span v-if="n.name" class="muted">{{ n.name }}:</span> {{ n.title }}
     </button>
   </div>
@@ -206,8 +223,8 @@ onMounted(async () => {
     {{ fin.financing.status === 'liquidating' ? 'هامشك نزل تحت حد التسييل: تُباع أسهمك الآن لسداد التمويل.'
       : 'تنبيه هامش: قيمة محفظتك اقتربت من حد التسييل. سدّد التمويل أو خفّف مراكزك.' }}
   </div>
-  <AdminPanel v-if="view === 'admin' && isAdmin" />
-  <main v-else class="grid">
+  <AdminPanel v-if="page === 'admin' && isAdmin" />
+  <main v-else-if="page === 'market'" class="grid">
     <!-- watchlist -->
     <section class="panel list">
       <table>
@@ -247,7 +264,7 @@ onMounted(async () => {
 
     <!-- depth + ticket -->
     <section class="panel side">
-      <h2>عمق السوق <small>اضغط على السعر للتداول</small></h2>
+      <h2>عمق السوق <small v-if="state.user">اضغط على السعر للتداول</small></h2>
       <div class="depth">
         <div class="dhead"><span>السعر</span><span>الكمية</span><span>أوامر</span></div>
         <div v-for="l in asksTopDown" :key="'a' + l.price" class="lvl ask" @click="pick(l.price, 'buy')">
@@ -262,7 +279,12 @@ onMounted(async () => {
         <p v-if="!state.book.bids.length && !state.book.asks.length" class="empty">لا توجد أوامر في الدفتر</p>
       </div>
 
-      <form class="ticket" @submit.prevent="submit">
+      <div v-if="!state.user" class="gate">
+        <b>الشراء والبيع بعد تسجيل الدخول</b>
+        <span>سجّل الدخول أو أنشئ حسابًا لتتداول برصيدك الافتراضي.</span>
+        <button class="primary" @click="state.showAuth = true">دخول / تسجيل</button>
+      </div>
+      <form v-else class="ticket" @submit.prevent="submit">
         <div class="seg">
           <button type="button" class="buy" :class="{ on: ticket.side === 'buy' }" @click="ticket.side = 'buy'">شراء</button>
           <button type="button" class="sell" :class="{ on: ticket.side === 'sell' }" @click="ticket.side = 'sell'">بيع</button>
@@ -326,65 +348,82 @@ onMounted(async () => {
       </template>
     </section>
 
-    <!-- account -->
+    <!-- under the chart: my open orders (signed in) and the top holders -->
     <section class="panel account">
       <div class="tabs">
-        <button :class="{ on: tab === 'orders' }" @click="tab = 'orders'">أوامري المفتوحة ({{ state.orders.length }})</button>
-        <button :class="{ on: tab === 'positions' }" @click="tab = 'positions'">محفظتي</button>
-        <button :class="{ on: tab === 'whales' }" @click="tab = 'whales'">الهوامير</button>
+        <button v-if="state.user" :class="{ on: tab === 'orders' }" @click="tab = 'orders'">أوامري المفتوحة ({{ state.orders.length }})</button>
         <button :class="{ on: tab === 'holders' }" @click="tab = 'holders'">كبار الملاك</button>
-        <button :class="{ on: tab === 'ipos' }" @click="tab = 'ipos'">الاكتتابات</button>
-        <button :class="{ on: tab === 'financing' }" @click="tab = 'financing'">التمويل</button>
-        <button :class="{ on: tab === 'forum' }" @click="tab = 'forum'">المنتدى</button>
-        <span v-if="state.user" class="worth">صافي الثروة <b class="num">{{ money(state.netWorth) }}</b>
-          · محجوز <span class="num">{{ money(state.balances.reserved) }}</span></span>
       </div>
-      <table v-if="tab === 'whales'">
-        <thead><tr><th>#</th><th>المتداول</th><th>صافي الثروة</th><th>نقد</th><th>أسهم</th><th>عدد الشركات</th></tr></thead>
+      <table v-if="tab === 'holders'">
+        <thead><tr><th>المالك في {{ current?.name }}</th><th>الكمية</th><th>النسبة من الأسهم المصدرة</th></tr></thead>
         <tbody>
-          <tr v-for="w in state.whales" :key="w.user_id" :class="{ sel: w.user_id === state.user?.id }">
-            <td class="num">{{ w.rank }}</td><td><b>{{ w.alias }}</b></td>
-            <td class="num">{{ money(w.net_worth) }}</td><td class="num muted">{{ money(w.cash) }}</td>
-            <td class="num muted">{{ money(w.stocks) }}</td><td class="num muted">{{ w.holdings }}</td>
+          <tr v-for="h in state.holders.holders" :key="h.holder">
+            <td><b>{{ h.holder }}</b> <small v-if="h.is_fund" class="tag">صندوق</small></td>
+            <td class="num">{{ qty(h.qty) }}</td>
+            <td class="num">{{ (h.share_bps / 100).toFixed(2) }}%</td>
           </tr>
-          <tr v-if="!state.whales.length"><td colspan="6" class="empty">لا يوجد متداولون بعد</td></tr>
+          <tr v-if="!state.holders.holders.length"><td colspan="3" class="empty">لا يوجد ملاك بعد</td></tr>
         </tbody>
       </table>
-      <div v-else-if="tab === 'forum'" class="forum">
-        <template v-if="state.thread">
-          <button class="ghost" @click="openThread(null); reloadThreads()">→ كل المواضيع</button>
-          <h3>{{ state.thread.thread.title }} <small class="muted">{{ state.thread.thread.alias }}<template v-if="state.thread.thread.company"> · {{ state.thread.thread.company }}</template></small></h3>
-          <p class="post">{{ state.thread.thread.body }}</p>
-          <p v-for="p in state.thread.posts" :key="p.id" class="post reply"><b>{{ p.alias }}</b> {{ p.body }}</p>
-          <form class="row" @submit.prevent="postReply">
-            <label class="grow">ردّك<input v-model="draft.reply" required maxlength="10000" /></label>
-            <button class="primary small">إرسال الرد</button>
-          </form>
-        </template>
-        <template v-else>
-          <div class="row">
-            <label class="check"><input v-model="forumSymbol" type="checkbox" /> مواضيع {{ current?.name }} فقط</label>
-          </div>
-          <table>
-            <tbody>
-              <tr v-for="t in state.threads" :key="t.id" @click="openThread(t.id)">
-                <td><b>{{ t.title }}</b><small>{{ t.alias }}<template v-if="t.company"> · {{ t.company }}</template></small></td>
-                <td class="num muted">{{ t.reply_count }} رد</td>
-              </tr>
-              <tr v-if="!state.threads.length"><td colspan="2" class="empty">لا توجد مواضيع بعد. اكتب أول تحليل.</td></tr>
-            </tbody>
-          </table>
-          <form class="row" @submit.prevent="postThread">
-            <label>العنوان<input v-model="draft.title" required minlength="3" maxlength="150" /></label>
-            <label class="grow">التحليل<input v-model="draft.body" required maxlength="10000" /></label>
-            <label class="check"><input v-model="draft.here" type="checkbox" /> عن {{ current?.name }}</label>
-            <button class="primary small">نشر</button>
-          </form>
-        </template>
+      <table v-else-if="state.user">
+        <thead><tr><th>السهم</th><th>الاتجاه</th><th>السعر</th><th>الكمية</th><th>المنفّذ</th><th>المحجوز له</th><th></th></tr></thead>
+        <tbody>
+          <tr v-for="o in state.orders" :key="o.id">
+            <td class="num">{{ o.symbol }}</td>
+            <td :class="o.side === 'buy' ? 'up' : 'down'">{{ o.side === 'buy' ? 'شراء' : 'بيع' }}</td>
+            <td class="num">{{ money(o.price) }}</td><td class="num">{{ qty(o.qty) }}</td><td class="num">{{ qty(o.filled_qty) }}</td>
+            <td class="num muted">{{ o.side === 'buy' ? money(o.reserved_amount) : qty(o.qty - o.filled_qty) + ' سهم' }}</td>
+            <td><button class="ghost" @click="cancel(o.id)">إلغاء</button></td>
+          </tr>
+          <tr v-if="!state.orders.length"><td colspan="7" class="empty">لا توجد أوامر مفتوحة</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <main v-else class="page">
+    <template v-if="page === 'portfolio' && state.user">
+      <div class="cards">
+        <div class="card"><span>صافي الثروة</span><b class="num">{{ money(state.netWorth) }}</b></div>
+        <div class="card"><span>النقد المتاح</span><b class="num">{{ money(state.balances.cash) }}</b></div>
+        <div class="card"><span>محجوز في أوامر</span><b class="num">{{ money(state.balances.reserved) }}</b></div>
       </div>
-      <div v-else-if="tab === 'financing'" class="fin">
-        <p v-if="!state.user" class="empty">سجّل الدخول لطلب تمويل.</p>
-        <template v-else-if="fin">
+      <section class="panel">
+        <h2>أسهمي <small>اضغط على السهم لفتحه في السوق</small></h2>
+        <div class="scroll"><table>
+        <thead><tr><th>السهم</th><th>الكمية</th><th>متوسط التكلفة</th><th>آخر سعر</th><th>القيمة</th><th>الربح / الخسارة</th></tr></thead>
+        <tbody>
+          <tr v-for="p in state.positions" :key="p.symbol" @click="show(p.symbol)">
+            <td><b>{{ p.name }}</b></td><td class="num">{{ qty(p.qty) }}</td><td class="num">{{ money(p.avg_cost) }}</td>
+            <td class="num">{{ money(state.companies[p.symbol]?.last ?? p.last) }}</td>
+            <td class="num">{{ money(p.market_value) }}</td>
+            <td class="num" :class="p.unrealized_pnl > 0 ? 'up' : p.unrealized_pnl < 0 ? 'down' : ''">{{ money(p.unrealized_pnl) }}</td>
+          </tr>
+          <tr v-if="!state.positions.length"><td colspan="6" class="empty">لا تملك أسهمًا بعد</td></tr>
+        </tbody>
+      </table></div>
+      </section>
+      <section class="panel">
+        <h2>أوامري المفتوحة</h2>
+        <div class="scroll"><table>
+        <thead><tr><th>السهم</th><th>الاتجاه</th><th>السعر</th><th>الكمية</th><th>المنفّذ</th><th>المحجوز له</th><th></th></tr></thead>
+        <tbody>
+          <tr v-for="o in state.orders" :key="o.id">
+            <td class="num">{{ o.symbol }}</td>
+            <td :class="o.side === 'buy' ? 'up' : 'down'">{{ o.side === 'buy' ? 'شراء' : 'بيع' }}</td>
+            <td class="num">{{ money(o.price) }}</td><td class="num">{{ qty(o.qty) }}</td><td class="num">{{ qty(o.filled_qty) }}</td>
+            <td class="num muted">{{ o.side === 'buy' ? money(o.reserved_amount) : qty(o.qty - o.filled_qty) + ' سهم' }}</td>
+            <td><button class="ghost" @click="cancel(o.id)">إلغاء</button></td>
+          </tr>
+          <tr v-if="!state.orders.length"><td colspan="7" class="empty">لا توجد أوامر مفتوحة</td></tr>
+        </tbody>
+      </table></div>
+      </section>
+    </template>
+    <section v-else-if="page === 'financing' && state.user" class="panel">
+      <h2>التمويل</h2>
+      <div class="fin">
+        <template v-if="fin">
           <p class="muted terms">تمويل برسم ثابت {{ (fin.terms.fee_bps / 100).toFixed(2) }}% يُعرف عند الطلب ولا يزيد، لمدة {{ fin.terms.days }} يومًا.
             تنبيه الهامش عند {{ fin.terms.margin_call_bps / 100 }}%، والتسييل الآلي عند {{ fin.terms.liquidation_bps / 100 }}%.</p>
           <div v-if="fin.financing" class="row">
@@ -403,7 +442,10 @@ onMounted(async () => {
           <p v-else class="empty">التمويل متوقف حاليًا.</p>
         </template>
       </div>
-      <table v-else-if="tab === 'ipos'">
+    </section>
+    <section v-else-if="page === 'ipos'" class="panel">
+      <h2>الاكتتابات</h2>
+      <div class="scroll"><table>
         <thead><tr><th>الشركة</th><th>سعر الطرح</th><th>المطروح</th><th>التغطية</th><th>الحالة</th><th>اكتتابي</th></tr></thead>
         <tbody>
           <tr v-for="i in state.ipos" :key="i.id">
@@ -416,53 +458,68 @@ onMounted(async () => {
                 <span class="num">طلبت {{ qty(i.my_requested) }}</span>
                 <span v-if="i.my_allocated != null" class="num up">خُصص {{ qty(i.my_allocated) }}</span>
               </template>
-              <template v-else-if="i.accepting">
+              <template v-else-if="i.accepting && state.user">
+
                 <input v-model.number="ipoQty[i.id]" type="number" :min="i.min_qty" :max="i.max_qty" class="sm" dir="ltr" :placeholder="i.min_qty + ' – ' + i.max_qty" />
                 <button class="primary small" @click="subscribe(i)">اكتتب</button>
               </template>
+              <button v-else-if="i.accepting" class="small" @click="state.showAuth = true">سجّل الدخول للاكتتاب</button>
               <span v-else class="muted">—</span>
             </td>
           </tr>
           <tr v-if="!state.ipos.length"><td colspan="6" class="empty">لا توجد اكتتابات</td></tr>
         </tbody>
-      </table>
-      <table v-else-if="tab === 'holders'">
-        <thead><tr><th>المالك في {{ current?.name }}</th><th>الكمية</th><th>النسبة من الأسهم المصدرة</th></tr></thead>
+      </table></div>
+    </section>
+    <section v-else-if="page === 'whales'" class="panel">
+      <h2>الهوامير <small>ترتيب المتداولين بصافي الثروة</small></h2>
+      <div class="scroll"><table>
+        <thead><tr><th>#</th><th>المتداول</th><th>صافي الثروة</th><th>نقد</th><th>أسهم</th><th>عدد الشركات</th></tr></thead>
         <tbody>
-          <tr v-for="h in state.holders.holders" :key="h.holder">
-            <td><b>{{ h.holder }}</b> <small v-if="h.is_fund" class="tag">صندوق</small></td>
-            <td class="num">{{ qty(h.qty) }}</td>
-            <td class="num">{{ (h.share_bps / 100).toFixed(2) }}%</td>
+          <tr v-for="w in state.whales" :key="w.user_id" :class="{ sel: w.user_id === state.user?.id }">
+            <td class="num">{{ w.rank }}</td><td><b>{{ w.alias }}</b></td>
+            <td class="num">{{ money(w.net_worth) }}</td><td class="num muted">{{ money(w.cash) }}</td>
+            <td class="num muted">{{ money(w.stocks) }}</td><td class="num muted">{{ w.holdings }}</td>
           </tr>
-          <tr v-if="!state.holders.holders.length"><td colspan="3" class="empty">لا يوجد ملاك بعد</td></tr>
+          <tr v-if="!state.whales.length"><td colspan="6" class="empty">لا يوجد متداولون بعد</td></tr>
         </tbody>
-      </table>
-      <p v-else-if="!state.user" class="empty">سجّل الدخول لتبدأ التداول برصيدك الافتراضي.</p>
-      <table v-else-if="tab === 'orders'">
-        <thead><tr><th>السهم</th><th>الاتجاه</th><th>السعر</th><th>الكمية</th><th>المنفّذ</th><th>المحجوز له</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="o in state.orders" :key="o.id">
-            <td class="num">{{ o.symbol }}</td>
-            <td :class="o.side === 'buy' ? 'up' : 'down'">{{ o.side === 'buy' ? 'شراء' : 'بيع' }}</td>
-            <td class="num">{{ money(o.price) }}</td><td class="num">{{ qty(o.qty) }}</td><td class="num">{{ qty(o.filled_qty) }}</td>
-            <td class="num muted">{{ o.side === 'buy' ? money(o.reserved_amount) : qty(o.qty - o.filled_qty) + ' سهم' }}</td>
-            <td><button class="ghost" @click="cancel(o.id)">إلغاء</button></td>
-          </tr>
-          <tr v-if="!state.orders.length"><td colspan="7" class="empty">لا توجد أوامر مفتوحة</td></tr>
-        </tbody>
-      </table>
-      <table v-else>
-        <thead><tr><th>السهم</th><th>الكمية</th><th>متوسط التكلفة</th><th>آخر سعر</th><th>القيمة</th><th>الربح / الخسارة</th></tr></thead>
-        <tbody>
-          <tr v-for="p in state.positions" :key="p.symbol" @click="select(p.symbol)">
-            <td><b>{{ p.name }}</b></td><td class="num">{{ qty(p.qty) }}</td><td class="num">{{ money(p.avg_cost) }}</td>
-            <td class="num">{{ money(state.companies[p.symbol]?.last ?? p.last) }}</td>
-            <td class="num">{{ money(p.market_value) }}</td>
-            <td class="num" :class="p.unrealized_pnl > 0 ? 'up' : p.unrealized_pnl < 0 ? 'down' : ''">{{ money(p.unrealized_pnl) }}</td>
-          </tr>
-          <tr v-if="!state.positions.length"><td colspan="6" class="empty">لا تملك أسهمًا بعد</td></tr>
-        </tbody>
-      </table>
+      </table></div>
+    </section>
+    <section v-else-if="page === 'forum'" class="panel">
+      <h2>المنتدى</h2>
+      <div class="forum">
+        <template v-if="state.thread">
+          <button class="ghost" @click="openThread(null); reloadThreads()">→ كل المواضيع</button>
+          <h3>{{ state.thread.thread.title }} <small class="muted">{{ state.thread.thread.alias }}<template v-if="state.thread.thread.company"> · {{ state.thread.thread.company }}</template></small></h3>
+          <p class="post">{{ state.thread.thread.body }}</p>
+          <p v-for="p in state.thread.posts" :key="p.id" class="post reply"><b>{{ p.alias }}</b> {{ p.body }}</p>
+          <form v-if="state.user" class="row" @submit.prevent="postReply">
+            <label class="grow">ردّك<input v-model="draft.reply" required maxlength="10000" /></label>
+            <button class="primary small">إرسال الرد</button>
+          </form>
+        </template>
+        <template v-else>
+          <div class="row">
+            <label class="check"><input v-model="forumSymbol" type="checkbox" /> مواضيع {{ current?.name }} فقط</label>
+          </div>
+          <table>
+            <tbody>
+              <tr v-for="t in state.threads" :key="t.id" @click="openThread(t.id)">
+                <td><b>{{ t.title }}</b><small>{{ t.alias }}<template v-if="t.company"> · {{ t.company }}</template></small></td>
+                <td class="num muted">{{ t.reply_count }} رد</td>
+              </tr>
+              <tr v-if="!state.threads.length"><td colspan="2" class="empty">لا توجد مواضيع بعد. اكتب أول تحليل.</td></tr>
+            </tbody>
+          </table>
+          <form v-if="state.user" class="row" @submit.prevent="postThread">
+            <label>العنوان<input v-model="draft.title" required minlength="3" maxlength="150" /></label>
+            <label class="grow">التحليل<input v-model="draft.body" required maxlength="10000" /></label>
+            <label class="check"><input v-model="draft.here" type="checkbox" /> عن {{ current?.name }}</label>
+            <button class="primary small">نشر</button>
+          </form>
+          <p v-else class="hint">سجّل الدخول لتنشر تحليلًا أو تردّ.</p>
+        </template>
+      </div>
     </section>
   </main>
 
