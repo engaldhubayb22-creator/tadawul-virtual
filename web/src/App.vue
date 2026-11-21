@@ -5,9 +5,9 @@ import AuthModal from './AuthModal.vue'
 import ChartPanel from './ChartPanel.vue'
 import { nearestTicks, tickFor } from './ticks'
 import {
-  cancelOrder, connect, loadAccount, loadHolders, loadIpos, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
+  cancelOrder, connect, loadAccount, loadHolders, loadMyTrades, loadIpos, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
   loadChat, loadThreads, openThread, repayFinancing, requestFinancing, restoreSession, select, sendChat, setChatRoom,
-  state, subscribeIpo, toast, api, DEMO,
+  state, subscribeIpo, toast, api, isoTime, DEMO,
 } from './store'
 
 const rows = computed(() => state.symbols.map((s) => state.companies[s]))
@@ -108,6 +108,8 @@ async function cancel(id) {
 // ---- depth bars: widths relative to the largest level on screen
 const maxDepth = computed(() => Math.max(1, ...state.book.bids.map((l) => l.qty), ...state.book.asks.map((l) => l.qty)))
 const asksTopDown = computed(() => [...state.book.asks].reverse())
+const stamp = (s) => new Date(Date.parse(isoTime(s))).toLocaleString('en-GB', {
+  timeZone: state.market.timezone, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 const time = (ms) => new Date(ms).toLocaleTimeString('en-GB', { timeZone: state.market.timezone })
 
 const reloadThreads = () => loadThreads(forumSymbol.value ? state.selected : '').catch(() => {})
@@ -118,6 +120,7 @@ function refreshTab() {
   // the account tabs reload on their own too.
   const on = page.value
   if (state.token && ['market', 'portfolio', 'ipos', 'financing'].includes(on)) loadAccount().catch(() => {})
+  if (on === 'portfolio') loadMyTrades().catch(() => {})
   if (on === 'whales') loadWhales().catch(() => {})
   if (on === 'forum' && !state.thread) reloadThreads()
   if (on === 'ipos') {
@@ -391,15 +394,18 @@ onMounted(async () => {
       <section class="panel">
         <h2>أسهمي <small>اضغط على السهم لفتحه في السوق</small></h2>
         <div class="scroll"><table>
-        <thead><tr><th>السهم</th><th>الكمية</th><th>متوسط التكلفة</th><th>آخر سعر</th><th>القيمة</th><th>الربح / الخسارة</th></tr></thead>
+        <thead><tr><th>السهم</th><th>الكمية</th><th>متوسط سعر الشراء</th><th>إجمالي تكلفة الشراء</th><th>آخر سعر</th><th>القيمة السوقية</th><th>الربح / الخسارة</th><th>النسبة</th></tr></thead>
         <tbody>
           <tr v-for="p in state.positions" :key="p.symbol" @click="show(p.symbol)">
-            <td><b>{{ p.name }}</b></td><td class="num">{{ qty(p.qty) }}</td><td class="num">{{ money(p.avg_cost) }}</td>
+            <td><b>{{ p.name }}</b><small class="num">{{ p.symbol }}</small></td><td class="num">{{ qty(p.qty) }}</td><td class="num">{{ money(p.avg_cost) }}</td>
+            <td class="num">{{ money(p.market_value - p.unrealized_pnl) }}</td>
             <td class="num">{{ money(state.companies[p.symbol]?.last ?? p.last) }}</td>
             <td class="num">{{ money(p.market_value) }}</td>
             <td class="num" :class="p.unrealized_pnl > 0 ? 'up' : p.unrealized_pnl < 0 ? 'down' : ''">{{ money(p.unrealized_pnl) }}</td>
+            <td class="num" :class="p.unrealized_pnl > 0 ? 'up' : p.unrealized_pnl < 0 ? 'down' : ''">
+              {{ p.market_value - p.unrealized_pnl > 0 ? ((p.unrealized_pnl / (p.market_value - p.unrealized_pnl)) * 100).toFixed(2) + '%' : '—' }}</td>
           </tr>
-          <tr v-if="!state.positions.length"><td colspan="6" class="empty">لا تملك أسهمًا بعد</td></tr>
+          <tr v-if="!state.positions.length"><td colspan="8" class="empty">لا تملك أسهمًا بعد</td></tr>
         </tbody>
       </table></div>
       </section>
@@ -418,6 +424,24 @@ onMounted(async () => {
           <tr v-if="!state.orders.length"><td colspan="7" class="empty">لا توجد أوامر مفتوحة</td></tr>
         </tbody>
       </table></div>
+      </section>
+      <section class="panel">
+        <h2>عملياتي المنفذة <small>كل تنفيذ بسعره وعمولته، الأحدث أولًا</small></h2>
+        <div class="scroll"><table>
+          <thead><tr><th>الوقت</th><th>السهم</th><th>العملية</th><th>الكمية</th><th>سعر التنفيذ</th><th>القيمة</th><th>العمولة</th><th>الصافي</th><th>رقم الأمر</th></tr></thead>
+          <tbody>
+            <tr v-for="t in state.myTrades" :key="t.id" @click="show(t.symbol)">
+              <td class="num muted">{{ stamp(t.executed_at) }}</td>
+              <td><b>{{ t.name }}</b><small class="num">{{ t.symbol }}</small></td>
+              <td :class="t.side === 'buy' ? 'up' : 'down'">{{ t.side === 'buy' ? 'شراء' : 'بيع' }}</td>
+              <td class="num">{{ qty(t.qty) }}</td><td class="num">{{ money(t.price) }}</td>
+              <td class="num">{{ money(t.value) }}</td><td class="num muted">{{ money(t.commission) }}</td>
+              <td class="num">{{ t.side === 'buy' ? '-' : '+' }}{{ money(t.net) }}</td>
+              <td class="num muted">{{ t.order_id }}</td>
+            </tr>
+            <tr v-if="!state.myTrades.length"><td colspan="9" class="empty">لا توجد عمليات منفذة بعد</td></tr>
+          </tbody>
+        </table></div>
       </section>
     </template>
     <section v-else-if="page === 'financing' && state.user" class="panel">

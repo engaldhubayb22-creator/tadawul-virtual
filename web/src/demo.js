@@ -45,7 +45,7 @@ function book(c) {
 
 // ---------------------------------------------------------------- the user
 
-const me = { user: null, cash: 0, reserved: 0, positions: {}, orders: [], financing: null, ipo: {} }
+const me = { user: null, cash: 0, reserved: 0, positions: {}, orders: [], trades: [], financing: null, ipo: {} }
 let nextId = 1000
 const need = () => { if (!me.user) throw new Error('سجّل الدخول أولًا') }
 const stocks = () => Object.entries(me.positions).reduce((s, [sym, p]) => s + p.qty * co[sym].last, 0)
@@ -68,6 +68,8 @@ function fill(o, price) {
     me.cash += price * o.qty
     if (pos.qty === 0) delete me.positions[o.symbol]
   }
+  me.trades.unshift({ id: ++nextId, order_id: o.id, symbol: o.symbol, name: c.name, side: o.side, price, qty: o.qty,
+    value: price * o.qty, commission: 0, net: price * o.qty, executed_at: new Date().toISOString() })
   o.filled_qty = o.qty; o.status = 'filled'
   me.orders = me.orders.filter((x) => x !== o)
   trade(c, price, o.qty, o.side)
@@ -212,6 +214,7 @@ export async function demoApi(method, path, body) {
       const mv = stocks()
       return { balances: { cash: me.cash, reserved: me.reserved }, positions, market_value: mv, debt: debt(), net_worth: me.cash + me.reserved + mv - debt() }
     }
+    case 'GET trades': need(); return { trades: me.trades }
     case 'GET orders': need(); return { orders: query.includes('status=open') ? me.orders : [] }
     case 'POST orders': return placeOrder(body)
     case 'DELETE orders/*': need(); return cancelOrder(Number(p[1]))

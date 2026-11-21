@@ -33,6 +33,7 @@ Route::prefix('v1')->group(function () {
         Route::post('logout', [AuthController::class, 'logout']);
         Route::get('me', [AuthController::class, 'me']);
         Route::get('portfolio', [OrderController::class, 'portfolio']);
+        Route::get('trades', [OrderController::class, 'trades']);
         Route::post('ipos/{id}/subscribe', [IpoController::class, 'subscribe']);
         Route::post('chat/{room}', [CommunityController::class, 'chatSend'])->middleware('throttle:chat');
         Route::delete('chat/messages/{id}', [CommunityController::class, 'chatDelete']);

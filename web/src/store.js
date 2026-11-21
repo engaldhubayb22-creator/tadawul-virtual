@@ -22,6 +22,7 @@ export const state = reactive({
   trades: [],
   orders: [],
   positions: [],
+  myTrades: [],
   netWorth: 0,
   news: [],
   chatRoom: 'general', // 'general' or 'symbol' (the selected company's room)
@@ -110,6 +111,12 @@ export async function loadAccount() {
   state.netWorth = p.net_worth
   state.orders = o.orders
   loadFinancing().catch(() => {})
+}
+
+// The trader's own executions, for the portfolio page.
+export async function loadMyTrades() {
+  if (!state.token) return
+  state.myTrades = (await api('GET', '/trades')).trades
 }
 
 export async function loadSymbol(symbol) {
@@ -227,6 +234,7 @@ export function logout(callServer = true) {
   state.user = null
   state.orders = []
   state.positions = []
+  state.myTrades = []
   state.financing = null
   saved.set('token', null)
   if (ws) ws.close() // reconnects as a guest, dropping the private channel

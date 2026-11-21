@@ -85,6 +85,50 @@ class OrderController extends Controller
         return response()->json(['status' => 'queued'], 202);
     }
 
+    /**
+     * The trader's own executions, newest first: one row per trade, with the
+     * commission the trader paid on it and the cash it moved.
+     */
+    public function trades(Request $request): JsonResponse
+    {
+        $userId = $request->user()->id;
+        $limit = min(max((int) $request->query('limit', 100), 1), 500);
+
+        $rows = DB::select(<<<'SQL'
+            SELECT t.id, c.symbol, c.name, t.price, t.qty, t.executed_at,
+                   CASE WHEN t.buy_user_id = :me THEN 'buy' ELSE 'sell' END AS side,
+                   CASE WHEN t.buy_user_id = :me2 THEN t.buy_order_id ELSE t.sell_order_id END AS order_id,
+                   COALESCE((
+                       SELECT SUM(e.amount) FROM ledger_entries e
+                       JOIN ledger_accounts a ON a.id = e.debit_account_id
+                       WHERE e.ref_type = 'commission' AND e.ref_id = t.id AND a.user_id = :me3), 0) AS commission
+            FROM trades t JOIN companies c ON c.id = t.company_id
+            WHERE t.buy_user_id = :me4 OR t.sell_user_id = :me5
+            ORDER BY t.id DESC
+            LIMIT :limit
+            SQL, ['me' => $userId, 'me2' => $userId, 'me3' => $userId, 'me4' => $userId, 'me5' => $userId, 'limit' => $limit]);
+
+        return response()->json(['trades' => array_map(function ($r) {
+            $value = (int) $r->price * (int) $r->qty;
+            $commission = (int) $r->commission;
+
+            return [
+                'id' => (int) $r->id,
+                'order_id' => (int) $r->order_id,
+                'symbol' => $r->symbol,
+                'name' => $r->name,
+                'side' => $r->side,
+                'price' => (int) $r->price,
+                'qty' => (int) $r->qty,
+                'value' => $value,
+                'commission' => $commission,
+                // Cash paid for a buy, cash received for a sell.
+                'net' => $r->side === 'buy' ? $value + $commission : $value - $commission,
+                'executed_at' => $r->executed_at,
+            ];
+        }, $rows)]);
+    }
+
     public function portfolio(Request $request): JsonResponse
     {
         $rows = DB::select(<<<'SQL'

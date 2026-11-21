@@ -225,6 +225,51 @@ class ApiTest extends TestCase
             ->assertJsonPath('net_worth', 10270000);
     }
 
+    public function test_my_trades_lists_own_executions_with_commission(): void
+    {
+        $buyer = $this->registerUser();
+        $seller = $this->registerUser('trader2', '0500000002');
+        $other = $this->registerUser('trader3', '0500000003');
+        $companyId = DB::table('companies')->value('id');
+        $order = fn (int $user, string $side) => DB::table('orders')->insertGetId([
+            'user_id' => $user, 'company_id' => $companyId, 'side' => $side, 'kind' => 'limit',
+            'price' => 2700, 'qty' => 10, 'filled_qty' => 10, 'status' => 'filled', 'idempotency_key' => $side.$user,
+        ]);
+        $buyOrder = $order($buyer['user']['id'], 'buy');
+        $sellOrder = $order($seller['user']['id'], 'sell');
+        $tradeId = DB::table('trades')->insertGetId([
+            'company_id' => $companyId, 'buy_order_id' => $buyOrder, 'sell_order_id' => $sellOrder,
+            'buy_user_id' => $buyer['user']['id'], 'sell_user_id' => $seller['user']['id'],
+            'price' => 2700, 'qty' => 10, 'taker_side' => 'buy',
+        ]);
+        // Commission of 41 from each side, as the engine records it.
+        $account = fn (int $user) => DB::table('ledger_accounts')->where('user_id', $user)->where('kind', 'cash')->value('id');
+        $commission = DB::table('ledger_accounts')->whereNull('user_id')->where('kind', 'sys_commission')->value('id');
+        foreach ([$buyer, $seller] as $side) {
+            DB::table('ledger_entries')->insert([
+                'debit_account_id' => $account($side['user']['id']), 'credit_account_id' => $commission,
+                'amount' => 41, 'ref_type' => 'commission', 'ref_id' => $tradeId,
+            ]);
+        }
+
+        $this->getJson('/api/v1/trades')->assertStatus(401);
+        $this->withToken($buyer['token'])->getJson('/api/v1/trades')->assertOk()
+            ->assertJsonCount(1, 'trades')
+            ->assertJsonPath('trades.0.symbol', '2222')
+            ->assertJsonPath('trades.0.side', 'buy')
+            ->assertJsonPath('trades.0.order_id', $buyOrder)
+            ->assertJsonPath('trades.0.value', 27000)
+            ->assertJsonPath('trades.0.commission', 41)
+            ->assertJsonPath('trades.0.net', 27041);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($seller['token'])->getJson('/api/v1/trades')->assertOk()
+            ->assertJsonPath('trades.0.side', 'sell')
+            ->assertJsonPath('trades.0.order_id', $sellOrder)
+            ->assertJsonPath('trades.0.net', 26959);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($other['token'])->getJson('/api/v1/trades')->assertOk()->assertJsonCount(0, 'trades');
+    }
+
     public function test_leaderboard_ranks_traders_by_net_worth_and_hides_bots(): void
     {
         $poor = $this->registerUser('small_fish', '0500000011');
