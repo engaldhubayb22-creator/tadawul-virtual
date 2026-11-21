@@ -10,9 +10,13 @@ RUN composer dump-autoload --optimize --no-dev
 FROM php:8.3-fpm-alpine
 RUN apk add --no-cache libpq \
  && apk add --no-cache --virtual .build $PHPIZE_DEPS postgresql-dev \
- && docker-php-ext-install pdo_pgsql \
+ && docker-php-ext-install pdo_pgsql opcache \
  && pecl install redis && docker-php-ext-enable redis \
  && apk del .build
+# Keep compiled PHP in memory. Without this every request recompiles the
+# framework. The code in the image never changes, so files are not re-checked.
+RUN printf 'opcache.enable=1\nopcache.validate_timestamps=0\nopcache.memory_consumption=192\nopcache.max_accelerated_files=20000\n' \
+    > /usr/local/etc/php/conf.d/opcache.ini
 WORKDIR /var/www/html
 COPY --from=vendor /app/ ./
 # The single migration loads ../db/schema.sql relative to the app.
