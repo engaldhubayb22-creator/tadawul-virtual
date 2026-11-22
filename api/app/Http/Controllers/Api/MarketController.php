@@ -237,9 +237,10 @@ class MarketController extends Controller
      * Largest holders of one company. Bot accounts appear under their fund
      * name; the share is of all shares currently held.
      */
-    public function holders(string $symbol): JsonResponse
+    public function holders(Request $request, string $symbol): JsonResponse
     {
         $company = $this->company($symbol);
+        $limit = min(max((int) $request->query('limit', 10), 1), 100);
         $total = (int) $company->shares_outstanding;
         $founders = (int) $company->founder_shares;
         $rows = DB::select(<<<'SQL'
@@ -248,8 +249,8 @@ class MarketController extends Controller
             FROM positions p JOIN users u ON u.id = p.user_id
             WHERE p.company_id = ? AND p.qty > 0
             ORDER BY p.qty DESC, u.id
-            LIMIT 10
-            SQL, [$company->id]);
+            LIMIT ?
+            SQL, [$company->id, $limit]);
 
         $holders = array_map(fn ($r) => [
             'holder' => $r->holder, 'is_fund' => (bool) $r->is_fund, 'qty' => (int) $r->qty,

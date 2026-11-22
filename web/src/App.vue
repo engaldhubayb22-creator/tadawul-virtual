@@ -39,6 +39,7 @@ const menu = computed(() => [
   { title: 'السوق', items: [
     { id: 'market', label: 'شاشة السوق' },
     { id: 'alltrades', label: 'صفقات السوق' },
+    { id: 'holders', label: 'ملاك الأسهم' },
     { id: 'ipos', label: 'الاكتتابات' }] },
   ...(state.user ? [{ title: 'حسابي', items: [
     { id: 'portfolio', label: 'محفظتي' },
@@ -139,6 +140,7 @@ function refreshTab() {
     if (state.ipos.some((i) => i.status === 'listed' && !state.companies[i.symbol])) loadMarket().catch(() => {})
   }
   if (on === 'market' && tab.value === 'holders' && state.selected) loadHolders(state.selected).catch(() => {})
+  if (on === 'holders' && state.selected) loadHolders(state.selected, 100).catch(() => {})
 }
 watch([page, tab, () => state.selected, forumSymbol], refreshTab)
 setInterval(refreshTab, 10000)
@@ -533,6 +535,26 @@ onMounted(async () => {
         </table></div>
       </section>
     </template>
+    <section v-else-if="page === 'holders'" class="panel">
+      <h2>ملاك الأسهم
+        <select class="pick" :value="state.selected" @change="select($event.target.value)">
+          <option v-for="c in rows" :key="c.symbol" :value="c.symbol">{{ c.name }} ({{ c.symbol }})</option>
+        </select>
+        <small>أكبر مئة مالك في الشركة المختارة</small></h2>
+      <div class="scroll"><table>
+        <thead><tr><th>الترتيب</th><th>المالك</th><th>عدد الأسهم</th><th>القيمة السوقية</th><th>النسبة من الأسهم المصدرة</th></tr></thead>
+        <tbody>
+          <tr v-for="(h, i) in state.holders.holders" :key="h.holder">
+            <td class="num muted">{{ i + 1 }}</td>
+            <td><b>{{ h.holder }}</b> <small v-if="h.is_fund" class="tag">صندوق</small></td>
+            <td class="num">{{ qty(h.qty) }}</td>
+            <td class="num">{{ big(h.qty * (current?.last ?? 0)) }}</td>
+            <td class="num">{{ (h.share_bps / 100).toFixed(2) }}%</td>
+          </tr>
+          <tr v-if="!state.holders.holders.length"><td colspan="5" class="empty">لا يوجد ملاك بعد</td></tr>
+        </tbody>
+      </table></div>
+    </section>
     <section v-else-if="page === 'alltrades'" class="panel">
       <h2>صفقات السوق <small>كل الصفقات المنفذة في السوق، تتحدث تلقائيًا</small></h2>
       <div class="scroll"><table>

@@ -54,6 +54,7 @@ label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
 .page { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: grid; gap: 12px; align-content: start; grid-auto-rows: max-content;
   width: 100%; max-width: 1200px; margin-inline: auto; }
 .page .panel { overflow: visible; }
+.pick { margin-inline: 12px; font-weight: 400; }
 .page tbody tr { cursor: pointer; }
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 4px; }

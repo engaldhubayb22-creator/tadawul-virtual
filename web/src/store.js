@@ -219,8 +219,8 @@ export async function loadWhales() {
   state.whales = (await api('GET', '/leaderboard')).traders
 }
 
-export async function loadHolders(symbol) {
-  const data = await api('GET', `/market/${symbol}/holders`)
+export async function loadHolders(symbol, limit = 10) {
+  const data = await api('GET', `/market/${symbol}/holders?limit=${limit}`)
   if (symbol === state.selected) state.holders = data
 }
 

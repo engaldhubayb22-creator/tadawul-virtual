@@ -325,6 +325,7 @@ class ApiTest extends TestCase
             ->assertJsonPath('traders.1.alias', 'small_fish')
             ->assertJsonPath('traders.1.net_worth', 10000000);
 
+        $this->getJson('/api/v1/market/2222/holders?limit=1')->assertOk()->assertJsonCount(1, 'holders');
         // Top holders: the fund shows under its name; shares are of all issued shares.
         $this->getJson('/api/v1/market/2222/holders')->assertOk()
             ->assertJsonPath('total_held', 10000)
