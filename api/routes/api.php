@@ -68,6 +68,7 @@ Route::prefix('v1')->group(function () {
         Route::prefix('admin')->middleware(AdminOnly::class)->group(function () {
             Route::get('overview', [AdminController::class, 'overview']);
             Route::put('settings', [AdminController::class, 'settings']);
+            Route::post('roll-day', [AdminController::class, 'rollDay']);
             Route::put('bots/{symbol}', [AdminController::class, 'bot']);
             Route::put('companies/{symbol}/status', [AdminController::class, 'companyStatus']);
             Route::put('companies/{symbol}/fundamentals', [AdminController::class, 'fundamentals']);

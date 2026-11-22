@@ -120,6 +120,18 @@ class AdminController extends Controller
     }
 
     /** Tune the market maker for one company, or start and stop a price scenario. */
+    /**
+     * Close the trading day now: today's prices become yesterday's close and
+     * a new session starts from them.
+     */
+    public function rollDay(Request $request): JsonResponse
+    {
+        $result = \App\Services\DayRoll::run();
+        $this->audit($request, 'market.roll_day', $result);
+
+        return response()->json(['message' => 'أُغلق اليوم على أسعاره وبدأت جلسة جديدة'] + $result);
+    }
+
     public function bot(Request $request, string $symbol): JsonResponse
     {
         $company = $this->company($symbol);

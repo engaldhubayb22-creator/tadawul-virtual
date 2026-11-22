@@ -150,6 +150,13 @@ const saveSettings = () => call('PUT', '/settings', {
   pledge_days: settings.pledge_days, pledge_call_bps: settings.pledge_call_bps, pledge_foreclose_bps: settings.pledge_foreclose_bps,
 }, 'حُفظت الإعدادات')
 const DAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت']
+async function rollDay() {
+  if (!confirm('إغلاق اليوم الآن؟ أسعار اليوم تصير إغلاق يوم سابق، كل بيانات السوق ترجع يومًا، أوامر اليوم المفتوحة تنتهي، وتبدأ جلسة جديدة. لا يمكن التراجع.')) return
+  try {
+    const r = await api('POST', '/admin/roll-day')
+    toast(r.message, 'good')
+  } catch (e) { toast(e.message, 'bad') }
+}
 const toggleBots = () => call('PUT', '/settings', { bots_enabled: !data.value.settings.bots_enabled },
   data.value.settings.bots_enabled ? 'أُوقفت كل البوتات' : 'شُغّلت البوتات')
 const saveBot = (c) => {
@@ -179,7 +186,7 @@ onBeforeUnmount(() => clearInterval(timer))
       <button v-for="t in ATABS" :key="t.id" :class="{ on: atab === t.id }" @click="atab = t.id">{{ t.label }}</button>
     </nav>
     <section v-show="atab === 'market'" class="panel pad">
-      <h3>السوق</h3>
+      <h3>السوق <button class="danger small" @click="rollDay">أغلق اليوم وابدأ جلسة جديدة</button></h3>
       <div class="row">
         <label>الافتتاح<input v-model="settings.market_open" type="time" dir="ltr" /></label>
         <label>الإغلاق<input v-model="settings.market_close" type="time" dir="ltr" /></label>

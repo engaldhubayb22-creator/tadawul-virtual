@@ -83,6 +83,7 @@ type Engine struct {
 	feeTenths int64        // commission in tenths of a basis point (15.5 bps = 155)
 	days      map[int]bool // weekdays the market trades on, 0 = Sunday
 	day       string
+	roll      string // the day_roll setting as last seen; a change closes the day
 	refreshed time.Time
 	DepthSize int
 
@@ -131,6 +132,9 @@ func (e *Engine) Load(ctx context.Context) error {
 		e.byID[c.id], e.bySy[c.symbol] = c, c
 	}
 	if err := rows.Err(); err != nil {
+		return err
+	}
+	if e.roll, err = e.rollStamp(ctx); err != nil {
 		return err
 	}
 	e.day = ""
@@ -190,6 +194,17 @@ func (e *Engine) loadSettings(ctx context.Context) error {
 	return nil
 }
 
+// rollStamp reads the day_roll setting, which the admin panel changes each
+// time it closes the trading day by hand. A database without it reads as "".
+func (e *Engine) rollStamp(ctx context.Context) (string, error) {
+	var raw []byte
+	err := e.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'day_roll'`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return string(raw), err
+}
+
 func parseHM(s string) (int, error) {
 	h, m, ok := strings.Cut(s, ":")
 	hh, err1 := strconv.Atoi(h)
@@ -212,6 +227,15 @@ func (e *Engine) refresh(ctx context.Context) error {
 	}
 	if err := e.loadSettings(ctx); err != nil {
 		return err
+	}
+	// The admin closed the day by hand: the stored history moved back one
+	// day, so open today again from the closing prices.
+	roll, err := e.rollStamp(ctx)
+	if err != nil {
+		return err
+	}
+	if roll != e.roll {
+		e.roll, e.day = roll, ""
 	}
 	rows, err := e.db.QueryContext(ctx, `SELECT id, symbol, tick_size, status FROM companies`)
 	if err != nil {
