@@ -134,6 +134,11 @@ CREATE TABLE companies (
     status             TEXT   NOT NULL DEFAULT 'trading'
                        CHECK (status IN ('pending', 'trading', 'halted', 'delisted')),
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Company file, written by the admin and shown on the company's page.
+    about              TEXT   NOT NULL DEFAULT '',
+    founded_year       INT    CHECK (founded_year BETWEEN 1800 AND 2200),
+    headquarters       TEXT   NOT NULL DEFAULT '',
+    website            TEXT   NOT NULL DEFAULT '',
     CHECK (founder_shares < shares_outstanding)
 );
 

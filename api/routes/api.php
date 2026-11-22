@@ -20,6 +20,8 @@ Route::prefix('v1')->group(function () {
 
     Route::get('market', [MarketController::class, 'index']);
     Route::get('market-trades', [MarketController::class, 'allTrades']);
+    Route::get('market/{symbol}/profile', [MarketController::class, 'profile']);
+    Route::get('market/{symbol}/history', [MarketController::class, 'history']);
     Route::get('news', [MarketController::class, 'news']);
     Route::get('leaderboard', [MarketController::class, 'leaderboard']);
     Route::get('ipos', [IpoController::class, 'index']);
@@ -66,6 +68,11 @@ Route::prefix('v1')->group(function () {
             Route::put('users/{id}/role', [AdminController::class, 'userRole']);
             Route::put('users/{id}/password', [AdminController::class, 'userPassword']);
             Route::post('users/{id}/balance', [AdminController::class, 'userBalance']);
+            Route::get('users/{id}/positions', [AdminController::class, 'userPositions']);
+            Route::post('users/{id}/shares', [AdminController::class, 'userShares']);
+            Route::post('shares/transfer', [AdminController::class, 'transferShares']);
+            Route::get('companies', [AdminController::class, 'companies']);
+            Route::put('companies/{symbol}', [AdminController::class, 'companyUpdate']);
             Route::post('ipos', [IpoController::class, 'store']);
             Route::post('ipos/{id}/allocate', [IpoController::class, 'allocate']);
         });

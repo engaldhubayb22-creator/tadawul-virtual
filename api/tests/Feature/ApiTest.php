@@ -386,4 +386,36 @@ class ApiTest extends TestCase
             ->assertJsonPath('issued_shares', 50000000)->assertJsonPath('free_float', 11000000)
             ->assertJsonPath('holders.0.qty', 39000000)->assertJsonPath('holders.0.share_bps', 7800);
     }
+
+    public function test_price_history_by_range_and_by_day(): void
+    {
+        $companyId = DB::table('companies')->value('id');
+        $candle = fn (string $at, int $open, int $high, int $low, int $close, int $volume) => DB::table('candles')->insert([
+            'company_id' => $companyId, 'interval' => '1m', 'bucket' => $at,
+            'open' => $open, 'high' => $high, 'low' => $low, 'close' => $close, 'volume' => $volume,
+        ]);
+        // Two trading days, Riyadh time: the first is 400 days ago, the second today.
+        $old = now('Asia/Riyadh')->subDays(400)->setTime(11, 0);
+        $today = now('Asia/Riyadh')->subMinutes(30);
+        $candle($old->toIso8601String(), 2000, 2050, 1990, 2040, 100);
+        $candle($old->copy()->addMinutes(7)->toIso8601String(), 2040, 2100, 2030, 2100, 50);
+        $candle($today->toIso8601String(), 2600, 2650, 2590, 2630, 10);
+        $candle($today->copy()->addMinutes(3)->toIso8601String(), 2630, 2640, 2500, 2520, 30);
+
+        // One day back: minute candles, and one row for today.
+        $this->getJson('/api/v1/market/2222/history?range=1d')->assertOk()
+            ->assertJsonPath('candle', '1 minute')->assertJsonCount(2, 'candles')->assertJsonCount(1, 'days')
+            ->assertJsonPath('days.0.open', 2600)->assertJsonPath('days.0.high', 2650)->assertJsonPath('days.0.low', 2500)
+            ->assertJsonPath('days.0.close', 2520)->assertJsonPath('days.0.volume', 40);
+        // A year back still misses the old day; two years has both, newest first, with the change between them.
+        $this->getJson('/api/v1/market/2222/history?range=1y')->assertOk()->assertJsonCount(1, 'days');
+        $this->getJson('/api/v1/market/2222/history?range=2y')->assertOk()
+            ->assertJsonPath('candle', 'day')->assertJsonCount(2, 'candles')->assertJsonCount(2, 'days')
+            ->assertJsonPath('days.0.close', 2520)->assertJsonPath('days.0.change_bps', 2000)
+            ->assertJsonPath('days.1.open', 2000)->assertJsonPath('days.1.high', 2100)->assertJsonPath('days.1.close', 2100)
+            ->assertJsonPath('days.1.volume', 150)->assertJsonPath('days.1.change_bps', null);
+        $this->getJson('/api/v1/market/2222/history?range=all')->assertOk()->assertJsonCount(2, 'days');
+        $this->getJson('/api/v1/market/2222/history?range=9z')->assertStatus(422);
+        $this->getJson('/api/v1/market/2222/profile')->assertOk()->assertJsonPath('year_high', 2650)->assertJsonPath('year_low', 2500);
+    }
 }

@@ -183,4 +183,71 @@ class AdminTest extends TestCase
     {
         $this->getJson('/api/v1/leaderboard')->assertOk()->assertJsonCount(2, 'traders');
     }
+
+    public function test_admin_edits_companies_and_moves_shares(): void
+    {
+        $traderId = (int) DB::table('users')->where('alias', 'trader')->value('id');
+        $adminId = (int) DB::table('users')->where('alias', 'boss')->value('id');
+        DB::table('users')->insert(['name' => 'صندوق السيولة', 'alias' => 'mm-bot', 'mobile' => 'mm-bot', 'password' => '!', 'role' => 'bot']);
+        $fundId = (int) DB::table('users')->where('alias', 'mm-bot')->value('id');
+        $companyId = (int) DB::table('companies')->where('symbol', '1120')->value('id');
+        $sectorId = DB::table('sectors')->insertGetId(['name' => 'الطاقة']);
+        // 1,000,000 issued, 400,000 with the founders: the fund holds the 600,000 float.
+        DB::table('companies')->where('id', $companyId)->update(['shares_outstanding' => 1000000, 'founder_shares' => 400000]);
+        DB::table('positions')->where('company_id', $companyId)->delete();
+        DB::table('positions')->insert(['user_id' => $fundId, 'company_id' => $companyId, 'qty' => 600000, 'cost_total' => 600000 * 9500]);
+        $held = fn (int $user) => (int) DB::table('positions')->where(['user_id' => $user, 'company_id' => $companyId])->value('qty');
+        $as = function (string $token) {
+            $this->app['auth']->forgetGuards();
+
+            return $this->withToken($token);
+        };
+
+        $as($this->trader)->getJson('/api/v1/admin/companies')->assertStatus(403);
+        $as($this->admin)->getJson('/api/v1/admin/companies?q=1120')->assertOk()
+            ->assertJsonCount(1, 'companies')->assertJsonPath('companies.0.free_float', 600000)
+            ->assertJsonPath('companies.0.held', 600000)->assertJsonPath('companies.0.fund_free', 600000)
+            ->assertJsonPath('sectors.0.name', 'الطاقة');
+
+        // The file and a larger issue: 200,000 new shares go to the fund.
+        $as($this->admin)->putJson('/api/v1/admin/companies/1120', [
+            'name' => 'مصرف الراجحي الجديد', 'sector_id' => $sectorId, 'about' => 'مصرف.', 'founded_year' => 1933,
+            'headquarters' => 'الظهران', 'website' => 'example.com', 'shares_outstanding' => 1200000,
+        ])->assertOk()->assertJsonPath('float_change', 200000);
+        $this->assertSame(800000, $held($fundId));
+        // Fewer shares than the fund can give up, or founders owning everything: refused.
+        DB::table('positions')->where('user_id', $fundId)->update(['reserved_qty' => 100]); // 100 of the fund's shares are in a sell order
+        $as($this->admin)->putJson('/api/v1/admin/companies/1120', ['shares_outstanding' => 400001])->assertStatus(422);
+        DB::table('positions')->where('user_id', $fundId)->update(['reserved_qty' => 0]);
+        $as($this->admin)->putJson('/api/v1/admin/companies/1120', ['founder_shares' => 1200000])->assertStatus(422);
+        $as($this->admin)->putJson('/api/v1/admin/companies/1120', ['founder_shares' => 500000])->assertOk()->assertJsonPath('float_change', -100000);
+        $this->assertSame(700000, $held($fundId));
+        $as($this->admin)->putJson('/api/v1/admin/companies/0000', ['name' => 'xx'])->assertStatus(404);
+
+        $this->getJson('/api/v1/market/1120/profile')->assertOk()
+            ->assertJsonPath('name', 'مصرف الراجحي الجديد')->assertJsonPath('sector', 'الطاقة')
+            ->assertJsonPath('about', 'مصرف.')->assertJsonPath('founded_year', 1933)
+            ->assertJsonPath('shares_outstanding', 1200000)->assertJsonPath('founder_shares', 500000)
+            ->assertJsonPath('free_float', 700000)->assertJsonPath('holders', 1);
+
+        // Give the trader 1,000 shares from the fund at the last price (95.00), then take 400 back.
+        $as($this->admin)->postJson("/api/v1/admin/users/$traderId/shares", ['symbol' => '1120', 'qty' => 1000])->assertOk();
+        $as($this->admin)->postJson("/api/v1/admin/users/$traderId/shares", ['symbol' => '1120', 'qty' => -400])->assertOk();
+        $as($this->admin)->postJson("/api/v1/admin/users/$traderId/shares", ['symbol' => '1120', 'qty' => -601])->assertStatus(422);
+        $as($this->admin)->postJson("/api/v1/admin/users/$traderId/shares", ['symbol' => '1120', 'qty' => 9999999])->assertStatus(422);
+        $as($this->admin)->getJson("/api/v1/admin/users/$traderId/positions")->assertOk()
+            ->assertJsonPath('positions.0.symbol', '1120')->assertJsonPath('positions.0.qty', 600)
+            ->assertJsonPath('positions.0.free', 600)->assertJsonPath('positions.0.avg_cost', 9500);
+
+        // Transfer ownership of 250 to the admin; shares in a sell order stay put.
+        DB::table('positions')->where(['user_id' => $traderId, 'company_id' => $companyId])->update(['reserved_qty' => 300]);
+        $transfer = ['symbol' => '1120', 'from_user_id' => $traderId, 'to_user_id' => $adminId];
+        $as($this->admin)->postJson('/api/v1/admin/shares/transfer', $transfer + ['qty' => 301])->assertStatus(422);
+        $as($this->admin)->postJson('/api/v1/admin/shares/transfer', $transfer + ['qty' => 250])->assertOk();
+        $as($this->admin)->postJson('/api/v1/admin/shares/transfer', ['to_user_id' => $traderId] + $transfer + ['qty' => 1])->assertStatus(422);
+        $this->assertSame([350, 250, 699400], [$held($traderId), $held($adminId), $held($fundId)]);
+        // Every share is still accounted for: positions add up to the free float.
+        $this->assertSame(700000, (int) DB::table('positions')->where('company_id', $companyId)->sum('qty'));
+        $this->assertSame(5, DB::table('audit_logs')->whereIn('action', ['company.update', 'user.shares', 'shares.transfer'])->count());
+    }
 }

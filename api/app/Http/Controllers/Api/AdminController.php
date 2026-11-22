@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Services\Ledger;
 use App\Services\OrderQueue;
+use App\Services\Shares;
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -349,6 +350,161 @@ class AdminController extends Controller
             $this->audit($request, 'user.balance', ['user_id' => $user->id, 'amount' => $amount]);
 
             return response()->json(['cash' => $free + $amount]);
+        });
+    }
+
+    /** Every company with its share counts and file, for the companies editor. ?q= filters by symbol or name. */
+    public function companies(Request $request): JsonResponse
+    {
+        $q = trim((string) $request->query('q', ''));
+        $like = '%'.str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $q).'%';
+        $fund = Shares::fund() ?? 0;
+
+        $rows = DB::select(<<<'SQL'
+            SELECT c.id, c.symbol, c.name, c.sector_id, s.name AS sector, c.status, c.listed_at,
+                   c.shares_outstanding, c.founder_shares, c.par_value, c.equity, c.net_income,
+                   c.about, c.founded_year, c.headquarters, c.website,
+                   COALESCE((SELECT sum(qty) FROM positions WHERE company_id = c.id), 0) AS held,
+                   (SELECT count(*) FROM positions p JOIN users u ON u.id = p.user_id
+                    WHERE p.company_id = c.id AND p.qty > 0 AND u.role <> 'bot') AS member_holders,
+                   COALESCE((SELECT qty - reserved_qty FROM positions WHERE company_id = c.id AND user_id = :fund), 0) AS fund_free
+            FROM companies c LEFT JOIN sectors s ON s.id = c.sector_id
+            WHERE :q = '' OR c.symbol ILIKE :a OR c.name ILIKE :b
+            ORDER BY c.symbol
+            SQL, ['fund' => $fund, 'q' => $q, 'a' => $like, 'b' => $like]);
+
+        return response()->json([
+            'sectors' => DB::table('sectors')->orderBy('name')->get(['id', 'name']),
+            'companies' => array_map(fn ($r) => [
+                'symbol' => $r->symbol, 'name' => $r->name, 'sector_id' => $r->sector_id, 'sector' => $r->sector,
+                'status' => $r->status, 'listed_at' => $r->listed_at,
+                'shares_outstanding' => (int) $r->shares_outstanding, 'founder_shares' => (int) $r->founder_shares,
+                'free_float' => (int) $r->shares_outstanding - (int) $r->founder_shares,
+                // What is actually held in positions. It should equal the free float.
+                'held' => (int) $r->held, 'member_holders' => (int) $r->member_holders, 'fund_free' => (int) $r->fund_free,
+                'par_value' => (int) $r->par_value, 'equity' => (int) $r->equity, 'net_income' => (int) $r->net_income,
+                'about' => $r->about, 'founded_year' => $r->founded_year, 'headquarters' => $r->headquarters, 'website' => $r->website,
+            ], $rows),
+        ]);
+    }
+
+    /**
+     * Edit a company: its file, its fundamentals and its share counts. A
+     * change in the free float is added to or taken from the liquidity fund.
+     */
+    public function companyUpdate(Request $request, string $symbol): JsonResponse
+    {
+        $data = $request->validate([
+            'name' => ['sometimes', 'string', 'min:2', 'max:120'],
+            'sector_id' => ['sometimes', 'nullable', 'integer', Rule::exists('sectors', 'id')],
+            'shares_outstanding' => ['sometimes', 'integer', 'min:1', 'max:1000000000000'],
+            'founder_shares' => ['sometimes', 'integer', 'min:0', 'max:1000000000000'],
+            'par_value' => ['sometimes', 'integer', 'min:1'],
+            'equity' => ['sometimes', 'integer', 'min:0'],
+            'net_income' => ['sometimes', 'integer'],
+            'about' => ['sometimes', 'nullable', 'string', 'max:10000'],
+            'founded_year' => ['sometimes', 'nullable', 'integer', 'between:1800,2200'],
+            'headquarters' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'website' => ['sometimes', 'nullable', 'string', 'max:200'],
+        ]);
+        foreach (['about', 'headquarters', 'website'] as $text) {
+            if (array_key_exists($text, $data)) {
+                $data[$text] = (string) $data[$text];
+            }
+        }
+
+        return DB::transaction(function () use ($symbol, $data, $request) {
+            $company = DB::table('companies')->where('symbol', $symbol)->lockForUpdate()->first();
+            abort_if($company === null, 404, 'الشركة غير موجودة');
+            $total = (int) ($data['shares_outstanding'] ?? $company->shares_outstanding);
+            $founders = (int) ($data['founder_shares'] ?? $company->founder_shares);
+            if ($founders >= $total) {
+                return response()->json(['message' => 'أسهم المؤسسين يجب أن تكون أقل من الأسهم المصدرة'], 422);
+            }
+            $delta = ($total - $founders) - ((int) $company->shares_outstanding - (int) $company->founder_shares);
+            if (($error = Shares::changeFloat($company, $delta)) !== null) {
+                return response()->json(['message' => $error], 422);
+            }
+            DB::table('companies')->where('id', $company->id)->update($data);
+            $this->audit($request, 'company.update', ['symbol' => $symbol, 'float_change' => $delta] + $data);
+
+            return response()->json(['ok' => true, 'float_change' => $delta]);
+        });
+    }
+
+    /** What a member (or a fund) holds, company by company. */
+    public function userPositions(int $id): JsonResponse
+    {
+        $user = DB::table('users')->where('id', $id)->first();
+        abort_if($user === null, 404, 'العضو غير موجود');
+
+        $rows = DB::select(<<<'SQL'
+            SELECT c.id, c.symbol, c.name, p.qty, p.reserved_qty, p.pledged_qty, p.cost_total
+            FROM positions p JOIN companies c ON c.id = p.company_id
+            WHERE p.user_id = ? AND p.qty > 0
+            ORDER BY c.symbol
+            SQL, [$id]);
+
+        return response()->json(['positions' => array_map(function ($r) {
+            $last = Shares::lastPrice((int) $r->id);
+
+            return [
+                'symbol' => $r->symbol, 'name' => $r->name, 'qty' => (int) $r->qty,
+                'in_orders' => (int) $r->reserved_qty - (int) $r->pledged_qty, 'pledged' => (int) $r->pledged_qty,
+                'free' => (int) $r->qty - (int) $r->reserved_qty,
+                'avg_cost' => intdiv((int) $r->cost_total, (int) $r->qty), 'last' => $last, 'value' => (int) $r->qty * $last,
+            ];
+        }, $rows)]);
+    }
+
+    /**
+     * Give a member shares or take shares back. They come from and return to
+     * the liquidity fund, at the last price, with no cash moving.
+     */
+    public function userShares(Request $request, int $id): JsonResponse
+    {
+        $user = $this->member($request, $id, allowSelf: true);
+        $data = $request->validate([
+            'symbol' => ['required', 'string', Rule::exists('companies', 'symbol')],
+            'qty' => ['required', 'integer', 'not_in:0', 'between:-1000000000000,1000000000000'],
+        ]);
+        $company = $this->company($data['symbol']);
+        $qty = (int) $data['qty'];
+        $fund = Shares::fund();
+        abort_if($fund === null, 422, 'لا يوجد صندوق سيولة تُؤخذ منه الأسهم أو تعود إليه');
+
+        return DB::transaction(function () use ($user, $company, $qty, $fund, $request, $data) {
+            $error = $qty > 0
+                ? Shares::move((int) $company->id, $fund, (int) $user->id, $qty, atMarket: true)
+                : Shares::move((int) $company->id, (int) $user->id, $fund, -$qty, atMarket: true);
+            if ($error !== null) {
+                return response()->json(['message' => $qty > 0 ? str_replace('المالك الحالي', 'صندوق السيولة', $error) : $error], 422);
+            }
+            $this->audit($request, 'user.shares', ['user_id' => $user->id] + $data);
+
+            return response()->json(['ok' => true]);
+        });
+    }
+
+    /** Transfer ownership of shares from one member to another, with their cost, outside the market. */
+    public function transferShares(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'symbol' => ['required', 'string', Rule::exists('companies', 'symbol')],
+            'from_user_id' => ['required', 'integer', Rule::exists('users', 'id')],
+            'to_user_id' => ['required', 'integer', Rule::exists('users', 'id'), 'different:from_user_id'],
+            'qty' => ['required', 'integer', 'min:1', 'max:1000000000000'],
+        ]);
+        $company = $this->company($data['symbol']);
+
+        return DB::transaction(function () use ($company, $data, $request) {
+            $error = Shares::move((int) $company->id, (int) $data['from_user_id'], (int) $data['to_user_id'], (int) $data['qty']);
+            if ($error !== null) {
+                return response()->json(['message' => $error], 422);
+            }
+            $this->audit($request, 'shares.transfer', $data);
+
+            return response()->json(['ok' => true]);
         });
     }
 

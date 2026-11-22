@@ -273,6 +273,86 @@ class MarketController extends Controller
         ]);
     }
 
+    /** The company file: who it is, how many shares it has, and its announcements. */
+    public function profile(string $symbol): JsonResponse
+    {
+        $c = $this->company($symbol);
+        $range = DB::selectOne(
+            "SELECT max(high) AS high, min(low) AS low FROM candles
+             WHERE company_id = ? AND interval = '1m' AND bucket >= now() - interval '365 days'", [$c->id]);
+        $news = DB::table('news')->where('company_id', $c->id)->orderByDesc('id')->limit(50)
+            ->get(['id', 'title', 'body', 'impact_bps', 'created_at']);
+
+        return response()->json([
+            'symbol' => $c->symbol, 'name' => $c->name, 'status' => $c->status,
+            'sector' => $c->sector_id ? DB::table('sectors')->where('id', $c->sector_id)->value('name') : null,
+            'about' => $c->about, 'founded_year' => $c->founded_year, 'headquarters' => $c->headquarters, 'website' => $c->website,
+            'listed_at' => $c->listed_at,
+            'shares_outstanding' => (int) $c->shares_outstanding, 'founder_shares' => (int) $c->founder_shares,
+            'free_float' => (int) $c->shares_outstanding - (int) $c->founder_shares,
+            'par_value' => (int) $c->par_value, 'equity' => (int) $c->equity, 'net_income' => (int) $c->net_income,
+            'holders' => DB::table('positions')->where('company_id', $c->id)->where('qty', '>', 0)->count(),
+            'year_high' => $range->high === null ? null : (int) $range->high,
+            'year_low' => $range->low === null ? null : (int) $range->low,
+            'announcements' => $news->map(fn ($n) => [
+                'id' => (int) $n->id, 'title' => $n->title, 'body' => $n->body,
+                'kind' => $n->impact_bps > 0 ? 'positive' : ($n->impact_bps < 0 ? 'negative' : 'neutral'),
+                'created_at' => $n->created_at,
+            ]),
+        ]);
+    }
+
+    /** Ranges the history can be asked for: how far back, and the width of one candle. */
+    private const RANGES = [
+        '1d' => ['1 day', '1 minute'], '2d' => ['2 days', '5 minutes'], '1w' => ['7 days', '15 minutes'],
+        '1m' => ['1 month', '1 hour'], '3m' => ['3 months', 'day'], '6m' => ['6 months', 'day'],
+        '1y' => ['1 year', 'day'], '2y' => ['2 years', 'day'], 'all' => [null, 'day'],
+    ];
+
+    /**
+     * Price history for a range: candles for the chart, sized to the range,
+     * and one row per trading day for the table. Days are days in the
+     * market's time zone. History starts when the company began trading here.
+     */
+    public function history(Request $request, string $symbol): JsonResponse
+    {
+        $company = $this->company($symbol);
+        $key = (string) $request->query('range', '1m');
+        abort_unless(isset(self::RANGES[$key]), 422, 'المدة غير معروفة');
+        [$back, $width] = self::RANGES[$key];
+        $tz = (string) (Ledger::setting('market_timezone') ?: 'Asia/Riyadh');
+        $since = $back === null ? "'-infinity'::timestamptz" : "now() - interval '$back'";
+        $day = 'date_trunc(\'day\', bucket, ?)';
+        $bucket = $width === 'day' ? $day : "date_bin(interval '$width', bucket, TIMESTAMPTZ '2000-01-01 00:00:00+00')";
+
+        $aggregate = fn (string $expr, array $bind) => DB::select(<<<SQL
+            SELECT b AS bucket, (array_agg(open ORDER BY bucket))[1] AS open, max(high) AS high, min(low) AS low,
+                   (array_agg(close ORDER BY bucket DESC))[1] AS close, sum(volume) AS volume
+            FROM (SELECT *, $expr AS b FROM candles
+                  WHERE company_id = ? AND interval = '1m' AND bucket >= $since) x
+            GROUP BY b ORDER BY b
+            SQL, $bind);
+        $shape = fn ($r) => [
+            'bucket' => $r->bucket, 'open' => (int) $r->open, 'high' => (int) $r->high, 'low' => (int) $r->low,
+            'close' => (int) $r->close, 'volume' => (int) $r->volume,
+        ];
+
+        $candles = array_map($shape, $aggregate($bucket, $width === 'day' ? [$tz, $company->id] : [$company->id]));
+        $days = $width === 'day' ? $candles : array_map($shape, $aggregate($day, [$tz, $company->id]));
+        // Change against the previous trading day in the range.
+        foreach ($days as $i => &$d) {
+            $prev = $i > 0 ? $days[$i - 1]['close'] : null;
+            $d['change_bps'] = $prev ? (int) round(($d['close'] - $prev) * 10000 / $prev) : null;
+        }
+        unset($d);
+
+        return response()->json([
+            'symbol' => $company->symbol, 'range' => $key, 'candle' => $width,
+            'candles' => $candles, 'days' => array_reverse($days),
+            'first_day' => DB::table('candles')->where('company_id', $company->id)->where('interval', '1m')->min('bucket'),
+        ]);
+    }
+
     public function news(): JsonResponse
     {
         $rows = DB::table('news as n')->leftJoin('companies as c', 'c.id', '=', 'n.company_id')

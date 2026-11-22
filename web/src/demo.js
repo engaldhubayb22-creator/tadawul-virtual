@@ -195,6 +195,17 @@ export async function demoApi(method, path, body) {
     case 'GET market/*/depth': return book(c)
     case 'GET market/*/trades': return { symbol: c.symbol, trades: c.trades.map((t) => ({ ...t, executed_at: new Date(t.at).toISOString() })) }
     case 'GET market/*/candles': return { symbol: c.symbol, candles: c.candles.map((k) => ({ bucket: new Date(k.t).toISOString(), ...k })) }
+    case 'GET market/*/profile': return { symbol: c.symbol, name: c.name, status: 'trading', sector: c.sector ?? null,
+      about: '', founded_year: null, headquarters: '', website: '', listed_at: null,
+      shares_outstanding: 11000000, founder_shares: 0, free_float: 11000000,
+      par_value: 1000, equity: 0, net_income: 0, holders: 2,
+      year_high: Math.max(...c.candles.map((k) => k.high)), year_low: Math.min(...c.candles.map((k) => k.low)), announcements: [] }
+    case 'GET market/*/history': {
+      const rows = c.candles.map((k) => ({ bucket: new Date(k.t).toISOString(), open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }))
+      const days = rows.length ? [{ bucket: new Date().toISOString(), open: rows[0].open, high: Math.max(...rows.map((k) => k.high)),
+        low: Math.min(...rows.map((k) => k.low)), close: rows.at(-1).close, volume: rows.reduce((n, k) => n + k.volume, 0), change_bps: null }] : []
+      return { symbol: c.symbol, range: 'all', candle: '1 minute', candles: rows, days, first_day: rows[0]?.bucket ?? null }
+    }
     case 'GET market/*/holders': {
       const mine = me.positions[c.symbol]?.qty ?? 0, total = 11000000
       const rows = [['صندوق السيولة', true, 10000000 - mine], ['محفظة التداول النشط', true, 1000000]]

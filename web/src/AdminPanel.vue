@@ -2,13 +2,14 @@
 // Admin panel: members, market settings, the market maker, scenarios, halts and news.
 // The engine applies changes within five seconds and the bot on its next cycle.
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import AdminCompanies from './AdminCompanies.vue'
 import { api, isoTime, money, state, toast } from './store'
 
 const data = ref(null)
 const settings = reactive({})
 const edits = reactive({}) // per symbol: fields being edited
 // kind: 'up' (positive, the price rises), 'down' (negative, it falls) or 'none'; impact is the size in percent.
-const news = reactive({ symbol: '', title: '', kind: 'up', impact: 3, minutes: 15 })
+const news = reactive({ symbol: '', title: '', body: '', kind: 'up', impact: 3, minutes: 15 })
 const newsImpact = () => (news.kind === 'none' ? 0 : Math.round(Math.abs(Number(news.impact)) * 100) * (news.kind === 'up' ? 1 : -1))
 const ipo = reactive({ symbol: '', name: '', sector: '', price: '', tick: 0.01, offered: 100000, maker: 500000, min: 10, max: 5000, minutes: 60 })
 const ipos = ref([])
@@ -29,6 +30,14 @@ async function allocateIpo(i) {
     loadIpos(); refresh()
   } catch (e) { toast(e.message, 'bad') }
 }
+// ---- sections of the panel
+const atab = ref('market')
+const ATABS = [
+  { id: 'market', label: 'السوق وصانع السوق' }, { id: 'members', label: 'الأعضاء' },
+  { id: 'companies', label: 'الشركات والأسهم' }, { id: 'transfer', label: 'نقل ملكية الأسهم' },
+  { id: 'ipos', label: 'الاكتتابات' }, { id: 'news', label: 'الأخبار والإعلانات' },
+]
+
 // ---- members
 const members = reactive({ total: 0, users: [], q: '' })
 const editing = reactive({ id: null, kind: '', value: '' }) // the row with an open balance or password form
@@ -60,6 +69,47 @@ function moveBalance(u, sign) {
   memberCall('POST', u, 'balance', { amount }, sign > 0 ? 'أُودع المبلغ في حساب ' + u.alias : 'خُصم المبلغ من حساب ' + u.alias)
 }
 const setPassword = (u) => memberCall('PUT', u, 'password', { password: editing.value }, 'تغيّرت كلمة مرور ' + u.alias)
+
+// ---- a member's shares: give from, or return to, the liquidity fund
+const holdings = reactive({ rows: [], symbol: '', qty: '' })
+const count = (n) => Number(n).toLocaleString('en-US')
+async function loadHoldings(u) {
+  try { holdings.rows = (await api('GET', `/admin/users/${u.id}/positions`)).positions } catch (e) { toast(e.message, 'bad') }
+}
+function openShares(u) {
+  openForm(u, 'shares')
+  holdings.rows = []; holdings.qty = ''
+  holdings.symbol ||= data.value.companies[0]?.symbol ?? ''
+  if (editing.id === u.id) loadHoldings(u)
+}
+async function moveShares(u, symbol, n) {
+  if (!n) return toast('اكتب عدد الأسهم', 'bad')
+  try {
+    await api('POST', `/admin/users/${u.id}/shares`, { symbol, qty: n })
+    toast(n > 0 ? `أُضيف ${count(n)} سهم إلى ${u.alias}` : `سُحب ${count(-n)} سهم من ${u.alias}`, 'good')
+    holdings.qty = ''
+    await Promise.all([loadHoldings(u), loadMembers()])
+  } catch (e) { toast(e.message, 'bad') }
+}
+
+// ---- transfer of ownership between two members
+const transfer = reactive({ symbol: '', from: null, to: null, qty: '', free: null })
+async function transferFree() {
+  transfer.free = null
+  if (!transfer.from || !transfer.symbol) return
+  try {
+    const rows = (await api('GET', `/admin/users/${transfer.from}/positions`)).positions
+    transfer.free = rows.find((r) => r.symbol === transfer.symbol)?.free ?? 0
+  } catch (e) { toast(e.message, 'bad') }
+}
+async function doTransfer() {
+  try {
+    await api('POST', '/admin/shares/transfer', { symbol: transfer.symbol, from_user_id: transfer.from, to_user_id: transfer.to, qty: Math.floor(Number(transfer.qty)) })
+    toast('نُقلت ملكية ' + count(Math.floor(Number(transfer.qty))) + ' سهم', 'good')
+    transfer.qty = ''
+    await Promise.all([transferFree(), loadMembers()])
+  } catch (e) { toast(e.message, 'bad') }
+}
 
 let timer = null
 
@@ -112,9 +162,9 @@ const startScenario = (c) => {
 const stopScenario = (c) => call('PUT', '/bots/' + c.symbol, { target_price: null })
 const toggleHalt = (c) => call('PUT', `/companies/${c.symbol}/status`, { status: c.status === 'halted' ? 'trading' : 'halted' })
 const publish = async () => {
-  await call('POST', '/news', { symbol: news.symbol, title: news.title, impact_bps: newsImpact(), minutes: news.minutes },
+  await call('POST', '/news', { symbol: news.symbol, title: news.title, body: news.body, impact_bps: newsImpact(), minutes: news.minutes },
     news.kind === 'up' ? 'نُشر الخبر الإيجابي' : news.kind === 'down' ? 'نُشر الخبر السلبي' : 'نُشر الخبر')
-  news.title = ''
+  news.title = ''; news.body = ''
 }
 
 onMounted(() => { refresh(); loadIpos(); loadMembers(); timer = setInterval(() => { refresh(); loadIpos() }, 5000) })
@@ -123,7 +173,10 @@ onBeforeUnmount(() => clearInterval(timer))
 
 <template>
   <div v-if="data" class="admin">
-    <section class="panel pad">
+    <nav class="bank-tabs">
+      <button v-for="t in ATABS" :key="t.id" :class="{ on: atab === t.id }" @click="atab = t.id">{{ t.label }}</button>
+    </nav>
+    <section v-show="atab === 'market'" class="panel pad">
       <h3>السوق</h3>
       <div class="row">
         <label>الافتتاح<input v-model="settings.market_open" type="time" dir="ltr" /></label>
@@ -162,7 +215,7 @@ onBeforeUnmount(() => clearInterval(timer))
       </div>
     </section>
 
-    <section class="panel pad">
+    <section v-show="atab === 'market'" class="panel pad">
       <h3>صانع السوق
         <button :class="data.settings.bots_enabled ? 'danger' : 'primary'" @click="toggleBots">
           {{ data.settings.bots_enabled ? 'إيقاف كل البوتات' : 'تشغيل البوتات' }}</button>
@@ -204,7 +257,7 @@ onBeforeUnmount(() => clearInterval(timer))
       </div>
     </section>
 
-    <section class="panel pad">
+    <section v-show="atab === 'members'" class="panel pad">
       <h3>الأعضاء <span class="muted">{{ members.total }} عضو</span>
         <input v-model="members.q" class="search" placeholder="بحث بالاسم أو الاسم المستعار أو الجوال" @input="searchMembers" /></h3>
       <div class="scroll">
@@ -227,6 +280,7 @@ onBeforeUnmount(() => clearInterval(timer))
                 <td class="num muted">{{ joined(u.created_at) }}</td>
                 <td class="acts">
                   <button class="small" @click="openForm(u, 'balance')">الرصيد</button>
+                  <button class="small" @click="openShares(u)">الأسهم</button>
                   <template v-if="u.id !== state.user?.id">
                     <button class="small" @click="openForm(u, 'password')">كلمة المرور</button>
                     <button v-if="u.status === 'active'" class="small" @click="setStatus(u, 'suspended')">إيقاف</button>
@@ -243,6 +297,29 @@ onBeforeUnmount(() => clearInterval(timer))
                     <button type="button" class="small danger" @click="moveBalance(u, -1)">خصم من حسابه</button>
                     <span class="muted">الخصم من النقد المتاح فقط، والمحجوز في الأوامر لا يُمس.</span>
                   </form>
+                  <div v-else-if="editing.kind === 'shares'" class="shares">
+                    <table>
+                      <thead><tr><th>السهم</th><th>يملك</th><th>حرة</th><th>في أوامر بيع</th><th>مرهونة</th><th>متوسط التكلفة</th><th>القيمة</th><th></th></tr></thead>
+                      <tbody>
+                        <tr v-for="h in holdings.rows" :key="h.symbol">
+                          <td><b>{{ h.name }}</b><small class="num">{{ h.symbol }}</small></td>
+                          <td class="num">{{ count(h.qty) }}</td><td class="num">{{ count(h.free) }}</td>
+                          <td class="num muted">{{ count(h.in_orders) }}</td><td class="num muted">{{ count(h.pledged) }}</td>
+                          <td class="num">{{ money(h.avg_cost) }}</td><td class="num">{{ money(h.value) }}</td>
+                          <td><button class="small danger" :disabled="!h.free" @click="moveShares(u, h.symbol, -h.free)">اسحب الحرة كلها</button></td>
+                        </tr>
+                        <tr v-if="!holdings.rows.length"><td colspan="8" class="empty">لا يملك أسهمًا</td></tr>
+                      </tbody>
+                    </table>
+                    <form class="row" @submit.prevent="moveShares(u, holdings.symbol, Math.floor(Number(holdings.qty)))">
+                      <label>الشركة<select v-model="holdings.symbol" required>
+                        <option v-for="c in data.companies" :key="c.symbol" :value="c.symbol">{{ c.name }} ({{ c.symbol }})</option></select></label>
+                      <label>عدد الأسهم<input v-model="holdings.qty" type="number" min="1" step="1" required dir="ltr" /></label>
+                      <button class="primary small">أضف إلى محفظته</button>
+                      <button type="button" class="small danger" @click="moveShares(u, holdings.symbol, -Math.floor(Number(holdings.qty)))">اسحب من محفظته</button>
+                      <span class="muted">الأسهم تأتي من صندوق السيولة وتعود إليه، بآخر سعر وبدون نقد.</span>
+                    </form>
+                  </div>
                   <form v-else class="row" @submit.prevent="setPassword(u)">
                     <label>كلمة مرور جديدة (8 أحرف على الأقل)<input v-model="editing.value" type="text" minlength="8" required dir="ltr" /></label>
                     <button class="primary small">تغيير</button>
@@ -258,7 +335,25 @@ onBeforeUnmount(() => clearInterval(timer))
       <p class="muted">الإيقاف والحظر يخرجان العضو من الموقع ويلغيان أوامره المفتوحة. الإيقاف مؤقت والحظر للمخالفين، وكلاهما يُرفع بزر "تفعيل".</p>
     </section>
 
-    <section class="panel pad">
+    <AdminCompanies v-if="atab === 'companies'" />
+
+    <section v-show="atab === 'transfer'" class="panel pad">
+      <h3>نقل ملكية الأسهم <span class="muted">من عضو إلى عضو، خارج السوق وبدون نقد</span></h3>
+      <form class="row" @submit.prevent="doTransfer">
+        <label>الشركة<select v-model="transfer.symbol" required @change="transferFree">
+          <option v-for="c in data.companies" :key="c.symbol" :value="c.symbol">{{ c.name }} ({{ c.symbol }})</option></select></label>
+        <label>المالك الحالي<select v-model="transfer.from" required @change="transferFree">
+          <option v-for="u in members.users" :key="u.id" :value="u.id">{{ u.alias }} · {{ u.mobile }}</option></select></label>
+        <label>المالك الجديد<select v-model="transfer.to" required>
+          <option v-for="u in members.users" :key="u.id" :value="u.id" :disabled="u.id === transfer.from">{{ u.alias }} · {{ u.mobile }}</option></select></label>
+        <label>عدد الأسهم<input v-model="transfer.qty" type="number" min="1" :max="transfer.free ?? undefined" step="1" required dir="ltr" /></label>
+        <button class="primary">انقل الملكية</button>
+      </form>
+      <p v-if="transfer.free !== null" class="muted">الأسهم الحرة عند المالك الحالي في هذه الشركة: <b class="num">{{ count(transfer.free) }}</b></p>
+      <p class="muted">تنتقل الأسهم بمتوسط تكلفتها إلى المالك الجديد. الأسهم المحجوزة في أوامر بيع والمرهونة للبنك لا تُنقل. كل نقل يُسجل في سجل التدقيق.</p>
+    </section>
+
+    <section v-show="atab === 'ipos'" class="panel pad">
       <h3>الاكتتابات</h3>
       <form class="row" @submit.prevent="createIpo">
         <label>الرمز<input v-model="ipo.symbol" required maxlength="8" class="sm" dir="ltr" /></label>
@@ -288,7 +383,7 @@ onBeforeUnmount(() => clearInterval(timer))
       </table>
     </section>
 
-    <section class="panel pad">
+    <section v-show="atab === 'news'" class="panel pad">
       <h3>نشر خبر</h3>
       <form class="row" @submit.prevent="publish">
         <label>الشركة<select v-model="news.symbol"><option v-for="c in data.companies" :key="c.symbol" :value="c.symbol">{{ c.name }}</option></select></label>
@@ -302,6 +397,7 @@ onBeforeUnmount(() => clearInterval(timer))
           <label>{{ news.kind === 'up' ? 'نسبة الارتفاع %' : 'نسبة النزول %' }}<input v-model="news.impact" type="number" min="0.1" max="10" step="0.1" required dir="ltr" /></label>
           <label>خلال (دقيقة)<input v-model.number="news.minutes" type="number" min="1" max="1440" dir="ltr" /></label>
         </template>
+        <label class="full">نص الإعلان (اختياري، يظهر في ملف الشركة)<textarea v-model="news.body" rows="3" maxlength="5000"></textarea></label>
         <button class="primary">نشر</button>
       </form>
       <p class="muted">الخبر الإيجابي يخلّي صانع السوق يرفع السهم بالنسبة المحددة تدريجيًا خلال المدة، والسلبي ينزّله. الحركة تتم بأوامر فعلية في السوق وضمن حدود اليوم.</p>

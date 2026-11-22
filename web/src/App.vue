@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import AdminPanel from './AdminPanel.vue'
 import BankPage from './BankPage.vue'
+import CompanyPage from './CompanyPage.vue'
 import AuthModal from './AuthModal.vue'
 import ChartPanel from './ChartPanel.vue'
 import { nearestTicks, tickFor } from './ticks'
@@ -39,6 +40,7 @@ const page = ref('market')
 const menu = computed(() => [
   { title: 'السوق', items: [
     { id: 'market', label: 'شاشة السوق' },
+    { id: 'companies', label: 'الشركات' },
     { id: 'alltrades', label: 'صفقات السوق' },
     { id: 'holders', label: 'ملاك الأسهم' },
     { id: 'ipos', label: 'الاكتتابات' }] },
@@ -249,6 +251,7 @@ onMounted(async () => {
     تنبيه تغطية: قيمة أسهمك المرهونة نزلت. سدّد القرض من صفحة البنك قبل أن ينفّذ البنك الرهن.
   </div>
   <AdminPanel v-if="page === 'admin' && isAdmin" />
+  <CompanyPage v-else-if="page === 'companies'" @trade="show" />
   <main v-else-if="page === 'market'" class="grid">
     <!-- watchlist -->
     <section class="panel list">
