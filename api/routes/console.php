@@ -9,3 +9,6 @@ Artisan::command('inspire', function () {
 
 // Margin calls and liquidations. Needs `php artisan schedule:work` (or cron) running.
 \Illuminate\Support\Facades\Schedule::command('margin:check')->everyMinute()->withoutOverlapping();
+
+// The market maker's analysis and plan. In shadow mode it places no orders.
+\Illuminate\Support\Facades\Schedule::command('maker:analyze')->everyFiveMinutes()->withoutOverlapping();

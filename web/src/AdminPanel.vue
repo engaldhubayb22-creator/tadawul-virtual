@@ -4,6 +4,7 @@
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import AdminCompanies from './AdminCompanies.vue'
 import AdminForum from './AdminForum.vue'
+import AdminMaker from './AdminMaker.vue'
 import { api, isoTime, money, state, toast } from './store'
 
 const data = ref(null)
@@ -34,7 +35,7 @@ async function allocateIpo(i) {
 // ---- sections of the panel
 const atab = ref('market')
 const ATABS = [
-  { id: 'market', label: 'السوق وصانع السوق' }, { id: 'members', label: 'الأعضاء' },
+  { id: 'market', label: 'السوق وصانع السوق' }, { id: 'maker', label: 'غرفة الصانع' }, { id: 'members', label: 'الأعضاء' },
   { id: 'companies', label: 'الشركات والأسهم' }, { id: 'transfer', label: 'نقل ملكية الأسهم' },
   { id: 'ipos', label: 'الاكتتابات' }, { id: 'news', label: 'الأخبار والإعلانات' }, { id: 'forum', label: 'المنتدى' },
 ]
@@ -338,6 +339,7 @@ onBeforeUnmount(() => clearInterval(timer))
 
     <AdminCompanies v-if="atab === 'companies'" />
     <AdminForum v-if="atab === 'forum'" />
+    <AdminMaker v-if="atab === 'maker'" />
 
     <section v-show="atab === 'transfer'" class="panel pad">
       <h3>نقل ملكية الأسهم <span class="muted">من عضو إلى عضو، خارج السوق وبدون نقد</span></h3>
