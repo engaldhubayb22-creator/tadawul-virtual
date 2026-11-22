@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Services\Ledger;
+use App\Services\Pledge;
 use App\Services\OrderQueue;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -154,7 +155,8 @@ class OrderController extends Controller
                        ORDER BY m.id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS balance_after
             FROM moves m
             LEFT JOIN trades t ON m.ref_type IN ('trade', 'commission') AND t.id = m.ref_id
-            LEFT JOIN companies c ON c.id = t.company_id
+            LEFT JOIN pledge_loans pl ON m.ref_type LIKE 'pledge\_%' AND pl.id = m.ref_id
+            LEFT JOIN companies c ON c.id = COALESCE(t.company_id, pl.company_id)
             ORDER BY m.id DESC
             LIMIT :limit
             SQL, ['me' => $userId, 'total' => $balances['cash'] + $balances['reserved'], 'limit' => $limit]);
@@ -176,7 +178,7 @@ class OrderController extends Controller
     public function portfolio(Request $request): JsonResponse
     {
         $rows = DB::select(<<<'SQL'
-            SELECT c.symbol, c.name, p.qty, p.reserved_qty, p.cost_total,
+            SELECT c.symbol, c.name, p.qty, p.reserved_qty, p.pledged_qty, p.cost_total,
                    COALESCE(
                        (SELECT price FROM trades WHERE company_id = c.id ORDER BY id DESC LIMIT 1),
                        (SELECT prev_close FROM daily_stats WHERE company_id = c.id ORDER BY trade_date DESC LIMIT 1),
@@ -196,7 +198,9 @@ class OrderController extends Controller
                 'symbol' => $r->symbol,
                 'name' => $r->name,
                 'qty' => $qty,
-                'reserved_qty' => (int) $r->reserved_qty,
+                // Shares in open sell orders, and shares pledged to the bank; neither can be sold.
+                'reserved_qty' => (int) $r->reserved_qty - (int) $r->pledged_qty,
+                'pledged_qty' => (int) $r->pledged_qty,
                 'avg_cost' => intdiv((int) $r->cost_total, $qty),
                 'last' => (int) $r->last,
                 'market_value' => $value,
@@ -206,7 +210,8 @@ class OrderController extends Controller
 
         $balances = Ledger::balances($request->user()->id);
         $debt = (int) DB::table('financings')->where('user_id', $request->user()->id)
-            ->whereIn('status', ['active', 'liquidating'])->sum(DB::raw('principal + fee'));
+            ->whereIn('status', ['active', 'liquidating'])->sum(DB::raw('principal + fee'))
+            + Pledge::debt($request->user()->id);
 
         return response()->json([
             'balances' => $balances,

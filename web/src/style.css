@@ -144,8 +144,42 @@ td small { display: block; color: var(--muted); font-size: 11px; }
 .newsitem:hover { color: #fff; }
 td small.tag { display: inline; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; margin-inline-start: 6px; }
 
-.fin { padding: 12px 14px; display: grid; gap: 12px; }
-.fin .terms { margin: 0; font-size: 13px; } .fin .row b { margin-inline-start: 4px; }
+/* ---- bank */
+.bank { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: grid; gap: 12px; align-content: start; grid-auto-rows: max-content;
+  width: 100%; max-width: 1200px; margin-inline: auto; }
+.bank .panel { overflow: visible; }
+.bank-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 18px 20px;
+  border: 1px solid #24405f; border-radius: 10px; background: linear-gradient(120deg, #12233a, #0f1a2a 60%, #121821); }
+.bank-head .who { display: flex; align-items: center; gap: 12px; }
+.bank-head .who b { display: block; font-size: 17px; } .bank-head small { color: var(--muted); }
+.bank-head .seal { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 700; font-size: 13px; }
+.bank-head .avail { display: grid; justify-items: end; }
+.bank-head .avail span { color: var(--muted); font-size: 12px; } .bank-head .avail b { font-size: 28px; line-height: 1.2; }
+.bank-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); overflow-x: auto; white-space: nowrap; }
+.bank-tabs button { border: 0; border-radius: 0; padding: 10px 14px; color: var(--muted); font-weight: 600; border-bottom: 2px solid transparent; }
+.bank-tabs button.on { color: #fff; border-bottom-color: var(--accent); }
+.products { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.product { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: grid; gap: 10px; align-content: start; }
+.product h3 { margin: 0; font-size: 15px; } .product p { margin: 0; color: var(--muted); font-size: 13px; min-height: 3em; }
+.product dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+.product dt { color: var(--muted); font-size: 12px; } .product dd { margin: 0; font-weight: 600; text-align: end; }
+.product button { justify-self: start; }
+.bank .body { padding: 14px; display: grid; gap: 14px; }
+.bank dl.terms, .bank dl.quote { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+.bank dl.terms > div, .bank dl.quote > div { background: #0d131c; border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }
+.bank dl.terms dt, .bank dl.quote dt { color: var(--muted); font-size: 12px; } .bank dl.terms dd, .bank dl.quote dd { margin: 0; font-weight: 600; }
+.bank dl.quote { grid-column: 1 / -1; }
+.bank .apply { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; align-items: start; }
+.bank .field { display: grid; gap: 6px; justify-items: start; } .bank .field label, .bank .field input, .bank .field select { width: 100%; }
+.bank .apply label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+.bank .apply > button.primary { grid-column: 1 / -1; justify-self: start; padding: 9px 22px; }
+.bank .actions { display: flex; gap: 8px; }
+.bank .alert { margin: 0; padding: 10px 12px; border: 1px solid #5b2329; border-radius: 6px; background: #2a1215; color: #ffb4b9; }
+.bank .rules { margin: 0; padding: 12px 34px 14px 14px; color: var(--muted); font-size: 13px; display: grid; gap: 4px; border-top: 1px solid var(--line); }
+.gauge { display: grid; gap: 6px; } .gauge-top { display: flex; justify-content: space-between; }
+.meter { height: 6px; border-radius: 3px; background: #1c2533; overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--up); } .meter i.bad { background: var(--down); }
+.ltv { display: grid; gap: 4px; min-width: 120px; }
 .marginbar { background: var(--down); color: #fff; padding: 6px 14px; font-weight: 600; }
 
 .tape .tabs .room { font-size: 12px; padding: 2px 8px; }

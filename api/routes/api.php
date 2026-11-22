@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\FinancingController;
 use App\Http\Controllers\Api\IpoController;
 use App\Http\Controllers\Api\MarketController;
 use App\Http\Controllers\Api\OrderController;
+use App\Http\Controllers\Api\PledgeController;
 use App\Http\Middleware\AdminOnly;
 use Illuminate\Support\Facades\Route;
 
@@ -36,6 +37,9 @@ Route::prefix('v1')->group(function () {
         Route::get('portfolio', [OrderController::class, 'portfolio']);
         Route::get('trades', [OrderController::class, 'trades']);
         Route::get('bank', [OrderController::class, 'bank']);
+        Route::get('pledges', [PledgeController::class, 'show']);
+        Route::post('pledges', [PledgeController::class, 'store'])->middleware('throttle:orders');
+        Route::post('pledges/{id}/repay', [PledgeController::class, 'repay'])->middleware('throttle:orders');
         Route::post('ipos/{id}/subscribe', [IpoController::class, 'subscribe']);
         Route::post('chat/{room}', [CommunityController::class, 'chatSend'])->middleware('throttle:chat');
         Route::delete('chat/messages/{id}', [CommunityController::class, 'chatDelete']);

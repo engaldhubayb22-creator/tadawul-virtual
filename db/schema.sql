@@ -194,10 +194,15 @@ CREATE TABLE positions (
     user_id      BIGINT NOT NULL REFERENCES users (id),
     company_id   BIGINT NOT NULL REFERENCES companies (id),
     qty          BIGINT NOT NULL DEFAULT 0 CHECK (qty >= 0),
-    reserved_qty BIGINT NOT NULL DEFAULT 0 CHECK (reserved_qty >= 0),  -- in open sell orders
+    -- Shares that cannot be sold: those in open sell orders plus pledged ones.
+    reserved_qty BIGINT NOT NULL DEFAULT 0 CHECK (reserved_qty >= 0),
     cost_total   BIGINT NOT NULL DEFAULT 0 CHECK (cost_total >= 0),    -- avg cost = cost_total / qty
+    -- Shares pledged to the bank against a loan. They are counted inside
+    -- reserved_qty as well, which is what keeps the engine from selling them.
+    pledged_qty  BIGINT NOT NULL DEFAULT 0 CHECK (pledged_qty >= 0),
     PRIMARY KEY (user_id, company_id),
-    CHECK (reserved_qty <= qty)
+    CHECK (reserved_qty <= qty),
+    CONSTRAINT positions_pledged_within_reserved CHECK (pledged_qty <= reserved_qty)
 );
 
 CREATE INDEX positions_company ON positions (company_id, qty DESC);     -- top holders
@@ -332,6 +337,42 @@ INSERT INTO settings (key, value) VALUES
     ('financing_days',          '30'),
     ('margin_call_bps',         '3000'),    -- warn when equity falls to 30% of assets
     ('liquidation_bps',         '2000');    -- sell out when it falls to 20%
+
+-- ---------------------------------------------------------------------------
+-- Loans against pledged shares
+-- ---------------------------------------------------------------------------
+
+-- The trader pledges shares of one company and borrows against their value.
+-- The shares stay in the trader's position but cannot be sold until the loan
+-- is repaid. If the debt grows too large against the shares' value, or the
+-- loan is overdue and unpaid, the bank takes the shares at the market price.
+CREATE TABLE IF NOT EXISTS pledge_loans (
+    id               BIGSERIAL PRIMARY KEY,
+    user_id          BIGINT NOT NULL REFERENCES users (id),
+    company_id       BIGINT NOT NULL REFERENCES companies (id),
+    qty              BIGINT NOT NULL CHECK (qty > 0),          -- pledged shares
+    principal        BIGINT NOT NULL CHECK (principal > 0),
+    fee              BIGINT NOT NULL CHECK (fee >= 0),         -- fixed, agreed up front
+    status           TEXT   NOT NULL DEFAULT 'active'
+                     CHECK (status IN ('active', 'repaid', 'foreclosed')),
+    due_at           TIMESTAMPTZ NOT NULL,
+    warned_at        TIMESTAMPTZ,                              -- cover call raised
+    foreclosed_price BIGINT,                                   -- price the bank took the shares at
+    written_off      BIGINT NOT NULL DEFAULT 0 CHECK (written_off >= 0),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    closed_at        TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS pledge_loans_open ON pledge_loans (user_id) WHERE status = 'active';
+
+INSERT INTO settings (key, value) VALUES
+    ('pledge_enabled',       'true'),
+    ('pledge_ltv_bps',       '5000'),   -- debt may be up to 50% of the pledged shares' value
+    ('pledge_fee_bps',       '200'),    -- fixed fee: 2% of the amount
+    ('pledge_days',          '90'),
+    ('pledge_call_bps',      '7000'),   -- warn when the debt reaches 70% of the value
+    ('pledge_foreclose_bps', '8500')    -- take the shares when it reaches 85%
+ON CONFLICT (key) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
 -- Chat and forum

@@ -215,6 +215,8 @@ export async function demoApi(method, path, body) {
       return { balances: { cash: me.cash, reserved: me.reserved }, positions, market_value: mv, debt: debt(), net_worth: me.cash + me.reserved + mv - debt() }
     }
     case 'GET trades': need(); return { trades: me.trades }
+    case 'GET pledges': need(); return { enabled: false, debt: 0, pledged_value: 0, loans: [], closed: [], eligible: [],
+      terms: { ltv_bps: 5000, fee_bps: 200, days: 90, call_bps: 7000, foreclose_bps: 8500 } }
     case 'GET market-trades': {
       const after = Number(new URLSearchParams(query).get('after') ?? 0)
       const rows = Object.values(co).flatMap((x) => x.trades.map((t) => ({ id: t.id, symbol: x.symbol, name: x.name, price: t.price,

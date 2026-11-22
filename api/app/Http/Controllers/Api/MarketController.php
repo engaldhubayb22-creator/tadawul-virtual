@@ -205,8 +205,11 @@ class MarketController extends Controller
                 SELECT p.user_id, sum(p.qty * px.last) AS amount, count(*) FILTER (WHERE p.qty > 0) AS holdings
                 FROM positions p JOIN px ON px.id = p.company_id GROUP BY p.user_id
             ), debt AS (
-                SELECT user_id, sum(principal + fee) AS amount FROM financings
-                WHERE status IN ('active', 'liquidating') GROUP BY user_id
+                SELECT user_id, sum(amount) AS amount FROM (
+                    SELECT user_id, principal + fee AS amount FROM financings WHERE status IN ('active', 'liquidating')
+                    UNION ALL
+                    SELECT user_id, principal + fee FROM pledge_loans WHERE status = 'active') owed
+                GROUP BY user_id
             )
             SELECT u.id, u.alias,
                    COALESCE(cash.amount, 0) AS cash, COALESCE(stock.amount, 0) AS stocks,

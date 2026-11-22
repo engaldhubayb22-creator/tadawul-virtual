@@ -32,6 +32,7 @@ export const state = reactive({
   threads: [],
   thread: null,
   financing: null,
+  pledges: null,
   ipos: [],
   whales: [],
   holders: { symbol: '', total_held: 0, holders: [] },
@@ -147,6 +148,17 @@ export async function loadBank() {
   const data = await api('GET', '/bank')
   state.balances = data.balances
   state.statement = data.statement
+}
+
+// Loans against pledged shares.
+export async function loadPledges() {
+  if (state.token) state.pledges = await api('GET', '/pledges')
+}
+export async function openPledge(symbol, qty, amount) {
+  state.pledges = await api('POST', '/pledges', { symbol, qty, amount })
+}
+export async function repayPledge(id) {
+  state.pledges = await api('POST', `/pledges/${id}/repay`)
 }
 
 // The trader's own executions.
@@ -273,6 +285,7 @@ export function logout(callServer = true) {
   state.myTrades = []
   state.statement = []
   state.financing = null
+  state.pledges = null
   saved.set('token', null)
   if (ws) ws.close() // reconnects as a guest, dropping the private channel
 }

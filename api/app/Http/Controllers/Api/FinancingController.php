@@ -72,7 +72,8 @@ class FinancingController extends Controller
                 'liquidation_bps' => (int) Ledger::setting('liquidation_bps'),
             ],
             'limit' => Financing::limit($p),
-            'assets' => $p['assets'], 'debt' => $p['debt'], 'equity' => $p['equity'], 'margin_bps' => $p['margin_bps'],
+            'assets' => $p['assets'], 'debt' => $p['facility_debt'], 'total_debt' => $p['debt'],
+            'equity' => $p['equity'], 'margin_bps' => $p['margin_bps'],
             'financing' => $f === null ? null : [
                 'id' => (int) $f->id, 'principal' => (int) $f->principal, 'fee' => (int) $f->fee,
                 'status' => $f->status, 'due_at' => $f->due_at, 'margin_called' => $f->margin_called_at !== null,

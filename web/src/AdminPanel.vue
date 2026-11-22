@@ -94,6 +94,8 @@ const saveSettings = () => call('PUT', '/settings', {
   financing_enabled: settings.financing_enabled, financing_fee_bps: settings.financing_fee_bps,
   financing_days: settings.financing_days, financing_max_ratio_bps: settings.financing_max_ratio_bps,
   margin_call_bps: settings.margin_call_bps, liquidation_bps: settings.liquidation_bps,
+  pledge_enabled: settings.pledge_enabled, pledge_ltv_bps: settings.pledge_ltv_bps, pledge_fee_bps: settings.pledge_fee_bps,
+  pledge_days: settings.pledge_days, pledge_call_bps: settings.pledge_call_bps, pledge_foreclose_bps: settings.pledge_foreclose_bps,
 }, 'حُفظت الإعدادات')
 const DAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت']
 const toggleBots = () => call('PUT', '/settings', { bots_enabled: !data.value.settings.bots_enabled },
@@ -141,6 +143,12 @@ onBeforeUnmount(() => clearInterval(timer))
         <label>حد التمويل من الحقوق (نقطة أساس)<input v-model.number="settings.financing_max_ratio_bps" type="number" min="0" dir="ltr" /></label>
         <label>تنبيه الهامش (نقطة أساس)<input v-model.number="settings.margin_call_bps" type="number" min="1" dir="ltr" /></label>
         <label>التسييل (نقطة أساس)<input v-model.number="settings.liquidation_bps" type="number" min="1" dir="ltr" /></label>
+        <label class="check"><input v-model="settings.pledge_enabled" type="checkbox" /> قروض الرهن مفعّلة</label>
+        <label>حد قرض الرهن من قيمة الأسهم (نقطة أساس)<input v-model.number="settings.pledge_ltv_bps" type="number" min="100" dir="ltr" /></label>
+        <label>رسم قرض الرهن (نقطة أساس)<input v-model.number="settings.pledge_fee_bps" type="number" min="0" dir="ltr" /></label>
+        <label>مدة قرض الرهن (يوم)<input v-model.number="settings.pledge_days" type="number" min="1" dir="ltr" /></label>
+        <label>تنبيه تغطية الرهن (نقطة أساس)<input v-model.number="settings.pledge_call_bps" type="number" min="100" dir="ltr" /></label>
+        <label>تنفيذ الرهن (نقطة أساس)<input v-model.number="settings.pledge_foreclose_bps" type="number" min="100" dir="ltr" /></label>
         <button class="primary" @click="saveSettings">حفظ</button>
       </div>
       <div class="stats">

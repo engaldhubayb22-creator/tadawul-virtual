@@ -7,8 +7,8 @@ use Illuminate\Support\Facades\DB;
 /**
  * Margin financing with a fixed fee.
  *
- *   assets = cash + cash held by orders + shares at the last price
- *   debt   = principal + fee of the open financing
+ *   assets = cash + cash held by orders + shares at the last price (pledged ones included)
+ *   debt   = principal + fee of the open financing, plus what is owed on loans against pledged shares
  *   equity = assets - debt
  *   margin = equity / assets
  *
@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\DB;
  */
 class Financing
 {
-    /** @return array{assets:int,debt:int,equity:int,margin_bps:?int,cash:int,financing:?object} */
+    /** @return array{assets:int,debt:int,facility_debt:int,equity:int,margin_bps:?int,cash:int,financing:?object} */
     public static function position(int $userId): array
     {
         $row = DB::selectOne(<<<'SQL'
@@ -35,10 +35,13 @@ class Financing
         $financing = DB::table('financings')->where('user_id', $userId)
             ->whereIn('status', ['active', 'liquidating'])->first();
         $assets = (int) $row->money + (int) $row->stocks;
-        $debt = $financing ? (int) $financing->principal + (int) $financing->fee : 0;
+        $facility = $financing ? (int) $financing->principal + (int) $financing->fee : 0;
+        // Everything owed counts against equity, so borrowed cash cannot be borrowed against again.
+        $debt = $facility + Pledge::debt($userId);
 
         return [
-            'assets' => $assets, 'debt' => $debt, 'equity' => $assets - $debt, 'cash' => (int) $row->cash,
+            'assets' => $assets, 'debt' => $debt, 'facility_debt' => $facility,
+            'equity' => $assets - $debt, 'cash' => (int) $row->cash,
             'margin_bps' => $debt > 0 && $assets > 0 ? intdiv(($assets - $debt) * 10000, $assets) : null,
             'financing' => $financing,
         ];
@@ -143,7 +146,7 @@ class Financing
                 }
                 $positions = DB::select(
                     'SELECT c.symbol, p.qty - p.reserved_qty AS free, p.qty FROM positions p
-                     JOIN companies c ON c.id = p.company_id WHERE p.user_id = ? AND p.qty > 0', [$userId]);
+                     JOIN companies c ON c.id = p.company_id WHERE p.user_id = ? AND p.qty - p.pledged_qty > 0', [$userId]);
                 foreach ($positions as $p) {
                     if ($p->free > 0) {
                         OrderQueue::send(['type' => 'new', 'user_id' => $userId, 'symbol' => $p->symbol, 'side' => 'sell',

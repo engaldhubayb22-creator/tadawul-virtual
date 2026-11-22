@@ -35,6 +35,12 @@ class AdminController extends Controller
         'financing_max_ratio_bps' => ['integer', 'between:0,30000'],
         'margin_call_bps' => ['integer', 'between:1,9999'],
         'liquidation_bps' => ['integer', 'between:1,9999'],
+        'pledge_enabled' => ['boolean'],
+        'pledge_ltv_bps' => ['integer', 'between:100,9000'],
+        'pledge_fee_bps' => ['integer', 'between:0,2000'],
+        'pledge_days' => ['integer', 'between:1,365'],
+        'pledge_call_bps' => ['integer', 'between:100,20000'],
+        'pledge_foreclose_bps' => ['integer', 'between:100,20000'],
     ];
 
     public function overview(): JsonResponse
@@ -90,6 +96,12 @@ class AdminController extends Controller
         }
         if (isset($data['margin_call_bps'], $data['liquidation_bps']) && $data['liquidation_bps'] >= $data['margin_call_bps']) {
             return response()->json(['message' => 'حد التسييل يجب أن يكون أقل من حد تنبيه الهامش'], 422);
+        }
+        // A new loan must start below the warning level, and the warning must come before the shares are taken.
+        $pledge = fn (string $key) => (int) ($data[$key] ?? Ledger::setting($key));
+        if (array_intersect(['pledge_ltv_bps', 'pledge_call_bps', 'pledge_foreclose_bps'], array_keys($data))
+            && ! ($pledge('pledge_ltv_bps') < $pledge('pledge_call_bps') && $pledge('pledge_call_bps') < $pledge('pledge_foreclose_bps'))) {
+            return response()->json(['message' => 'نسب الرهن يجب أن تتصاعد: حد القرض ثم حد التنبيه ثم حد تنفيذ الرهن'], 422);
         }
         if (isset($data['market_open'], $data['market_close']) && $data['market_open'] >= $data['market_close']) {
             return response()->json(['message' => 'وقت الافتتاح يجب أن يسبق وقت الإغلاق'], 422);
