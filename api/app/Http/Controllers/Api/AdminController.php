@@ -4,11 +4,14 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Services\Ledger;
+use App\Services\OrderQueue;
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Password;
 
 /**
  * The admin panel. Everything here is a setting the engine or the market
@@ -216,6 +219,135 @@ class AdminController extends Controller
     private function minutesFromNow(int $minutes): Expression
     {
         return DB::raw("now() + interval '".$minutes." minutes'");
+    }
+
+    /** Members, newest first, with what each one holds. ?q= filters by alias, name or mobile. */
+    public function users(Request $request): JsonResponse
+    {
+        $q = trim((string) $request->query('q', ''));
+        $like = '%'.str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $q).'%';
+
+        $rows = DB::select(<<<'SQL'
+            SELECT u.id, u.name, u.alias, u.mobile, u.role, u.status, u.created_at,
+                   COALESCE(m.cash, 0) AS cash, COALESCE(m.reserved, 0) AS reserved,
+                   (SELECT count(*) FROM positions p WHERE p.user_id = u.id AND p.qty > 0) AS holdings,
+                   (SELECT count(*) FROM orders o WHERE o.user_id = u.id AND o.status IN ('open', 'partial')) AS open_orders
+            FROM users u
+            LEFT JOIN LATERAL (
+                SELECT sum(balance) FILTER (WHERE kind = 'cash') AS cash,
+                       sum(balance) FILTER (WHERE kind = 'reserved') AS reserved
+                FROM ledger_accounts WHERE user_id = u.id) m ON true
+            WHERE u.role <> 'bot'
+              AND (:q = '' OR u.alias ILIKE :a OR u.name ILIKE :b OR u.mobile LIKE :c)
+            ORDER BY u.id DESC
+            LIMIT 200
+            SQL, ['q' => $q, 'a' => $like, 'b' => $like, 'c' => $like]);
+
+        return response()->json([
+            'total' => DB::table('users')->where('role', '<>', 'bot')->count(),
+            'users' => array_map(fn ($r) => [
+                'id' => (int) $r->id, 'name' => $r->name, 'alias' => $r->alias, 'mobile' => $r->mobile,
+                'role' => $r->role, 'status' => $r->status, 'created_at' => $r->created_at,
+                'cash' => (int) $r->cash, 'reserved' => (int) $r->reserved,
+                'holdings' => (int) $r->holdings, 'open_orders' => (int) $r->open_orders,
+            ], $rows),
+        ]);
+    }
+
+    /**
+     * Activate, suspend or ban a member. Suspending or banning signs the
+     * member out everywhere and cancels their open orders.
+     */
+    public function userStatus(Request $request, int $id): JsonResponse
+    {
+        $user = $this->member($request, $id);
+        $data = $request->validate(['status' => ['required', Rule::in(['active', 'suspended', 'banned'])]]);
+
+        DB::transaction(function () use ($user, $data, $request) {
+            DB::table('users')->where('id', $user->id)->update(['status' => $data['status']]);
+            if ($data['status'] !== 'active') {
+                DB::table('personal_access_tokens')->where('tokenable_id', $user->id)->delete();
+            }
+            $this->audit($request, 'user.status', ['user_id' => $user->id] + $data);
+        });
+        if ($data['status'] !== 'active') {
+            $open = DB::table('orders')->where('user_id', $user->id)->whereIn('status', ['open', 'partial'])->pluck('id');
+            foreach ($open as $orderId) {
+                OrderQueue::send(['type' => 'cancel', 'user_id' => $user->id, 'order_id' => $orderId]);
+            }
+        }
+
+        return response()->json(['status' => $data['status']]);
+    }
+
+    /** Make a member a trader, a moderator or an admin. */
+    public function userRole(Request $request, int $id): JsonResponse
+    {
+        $user = $this->member($request, $id);
+        $data = $request->validate(['role' => ['required', Rule::in(['trader', 'moderator', 'admin'])]]);
+
+        DB::transaction(function () use ($user, $data, $request) {
+            DB::table('users')->where('id', $user->id)->update(['role' => $data['role']]);
+            $this->audit($request, 'user.role', ['user_id' => $user->id] + $data);
+        });
+
+        return response()->json(['role' => $data['role']]);
+    }
+
+    /** Set a new password for a member and sign them out everywhere. */
+    public function userPassword(Request $request, int $id): JsonResponse
+    {
+        $user = $this->member($request, $id);
+        $data = $request->validate(['password' => ['required', 'string', Password::min(8)]]);
+
+        DB::transaction(function () use ($user, $data, $request) {
+            DB::table('users')->where('id', $user->id)->update(['password' => Hash::make($data['password'])]);
+            DB::table('personal_access_tokens')->where('tokenable_id', $user->id)->delete();
+            $this->audit($request, 'user.password', ['user_id' => $user->id]);
+        });
+
+        return response()->json(['ok' => true]);
+    }
+
+    /**
+     * Add virtual cash to a member or take some back. The money comes from
+     * and returns to the treasury, so the ledger stays balanced. A withdrawal
+     * is limited to the member's free cash: money held for open orders stays.
+     */
+    public function userBalance(Request $request, int $id): JsonResponse
+    {
+        $user = $this->member($request, $id, allowSelf: true);
+        $data = $request->validate([
+            'amount' => ['required', 'integer', 'not_in:0', 'between:-100000000000000,100000000000000'],
+        ]);
+        $amount = (int) $data['amount'];
+
+        return DB::transaction(function () use ($user, $amount, $request) {
+            $treasury = (int) DB::table('ledger_accounts')->where('kind', 'sys_treasury')->value('id');
+            $cash = Ledger::account((int) $user->id, 'cash');
+            $free = (int) DB::table('ledger_accounts')->where('id', $cash)->lockForUpdate()->value('balance');
+            if ($amount < 0 && $free < -$amount) {
+                return response()->json(['message' => 'النقد المتاح عند العضو أقل من المبلغ المطلوب خصمه'], 422);
+            }
+            if ($amount > 0) {
+                Ledger::move($treasury, $cash, $amount, 'admin_deposit', $request->user()->id);
+            } else {
+                Ledger::move($cash, $treasury, -$amount, 'admin_withdraw', $request->user()->id);
+            }
+            $this->audit($request, 'user.balance', ['user_id' => $user->id, 'amount' => $amount]);
+
+            return response()->json(['cash' => $free + $amount]);
+        });
+    }
+
+    /** A real member (never a bot). Admins cannot change their own status, role or password here. */
+    private function member(Request $request, int $id, bool $allowSelf = false): object
+    {
+        $user = DB::table('users')->where('id', $id)->where('role', '<>', 'bot')->first();
+        abort_if($user === null, 404, 'العضو غير موجود');
+        abort_if(! $allowSelf && $user->id === $request->user()->id, 422, 'لا يمكنك تغيير حسابك أنت من هنا');
+
+        return $user;
     }
 
     private function company(string $symbol): object

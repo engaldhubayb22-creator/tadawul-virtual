@@ -51,7 +51,7 @@ label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
 .gate span { color: var(--muted); font-size: 12px; }
 
 /* Pages other than the market: a centred column that scrolls as a whole. */
-.page { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: grid; gap: 12px; align-content: start;
+.page { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: grid; gap: 12px; align-content: start; grid-auto-rows: max-content;
   width: 100%; max-width: 1200px; margin-inline: auto; }
 .page .panel { overflow: visible; }
 .page tbody tr { cursor: pointer; }
@@ -156,9 +156,15 @@ td small.tag { display: inline; border: 1px solid var(--line); border-radius: 4p
 .post.reply { border-inline-start: 2px solid var(--line); padding-inline-start: 10px; } .post.reply b { color: var(--accent); margin-inline-end: 6px; }
 .forum .ghost { justify-self: start; }
 
-.admin { flex: 1; min-height: 0; padding: 8px; display: grid; gap: 8px; align-content: start; overflow-y: auto; }
+/* Rows take their content's height: a panel must never be squeezed to fit
+   the screen, the page scrolls instead. */
+.admin { flex: 1; min-height: 0; padding: 8px; display: grid; gap: 8px; align-content: start; grid-auto-rows: max-content; overflow-y: auto; }
 .admin .panel { overflow: visible; }
 .pad { padding: 12px 14px; gap: 12px; }
+.admin .search { margin-inline-start: auto; width: 280px; font-weight: 400; }
+.admin .acts { display: flex; gap: 4px; flex-wrap: wrap; }
+.admin .editrow td { background: #0d131c; padding: 10px 12px; }
+button.danger { color: var(--down); border-color: #5b2329; }
 .admin h3 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 12px; }
 .row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
 .row label { min-width: 120px; } .row .grow { flex: 1; min-width: 220px; }

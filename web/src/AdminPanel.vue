@@ -1,8 +1,8 @@
 <script setup>
-// Admin panel: market settings, the market maker, scenarios, halts and news.
+// Admin panel: members, market settings, the market maker, scenarios, halts and news.
 // The engine applies changes within five seconds and the bot on its next cycle.
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { api, money, toast } from './store'
+import { api, isoTime, money, state, toast } from './store'
 
 const data = ref(null)
 const settings = reactive({})
@@ -27,6 +27,38 @@ async function allocateIpo(i) {
     loadIpos(); refresh()
   } catch (e) { toast(e.message, 'bad') }
 }
+// ---- members
+const members = reactive({ total: 0, users: [], q: '' })
+const editing = reactive({ id: null, kind: '', value: '' }) // the row with an open balance or password form
+const ROLES = { trader: 'متداول', moderator: 'مشرف', admin: 'مدير' }
+const STATUS = { active: 'نشط', suspended: 'موقوف', banned: 'محظور' }
+const joined = (s) => new Date(Date.parse(isoTime(s))).toLocaleDateString('en-GB', { timeZone: state.market.timezone })
+async function loadMembers() {
+  try {
+    const d = await api('GET', '/admin/users' + (members.q ? '?q=' + encodeURIComponent(members.q) : ''))
+    members.total = d.total; members.users = d.users
+  } catch (e) { toast(e.message, 'bad') }
+}
+let searchTimer = null
+const searchMembers = () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadMembers, 300) }
+async function memberCall(method, u, what, body, done) {
+  try {
+    await api(method, `/admin/users/${u.id}/${what}`, body)
+    toast(done, 'good'); editing.id = null
+    await loadMembers()
+  } catch (e) { toast(e.message, 'bad') }
+}
+const setStatus = (u, status) => memberCall('PUT', u, 'status', { status },
+  status === 'active' ? 'فُعّل حساب ' + u.alias : status === 'banned' ? 'حُظر ' + u.alias : 'أُوقف حساب ' + u.alias)
+const setRole = (u, role) => memberCall('PUT', u, 'role', { role }, `صار ${u.alias} ${ROLES[role]}`)
+const openForm = (u, kind) => { Object.assign(editing, editing.id === u.id && editing.kind === kind ? { id: null } : { id: u.id, kind, value: '' }) }
+function moveBalance(u, sign) {
+  const amount = Math.round(Number(editing.value) * 100) * sign
+  if (!amount) return toast('اكتب المبلغ بالريال', 'bad')
+  memberCall('POST', u, 'balance', { amount }, sign > 0 ? 'أُودع المبلغ في حساب ' + u.alias : 'خُصم المبلغ من حساب ' + u.alias)
+}
+const setPassword = (u) => memberCall('PUT', u, 'password', { password: editing.value }, 'تغيّرت كلمة مرور ' + u.alias)
+
 let timer = null
 
 function apply(d) {
@@ -80,7 +112,7 @@ const publish = async () => {
   news.title = ''
 }
 
-onMounted(() => { refresh(); loadIpos(); timer = setInterval(() => { refresh(); loadIpos() }, 5000) })
+onMounted(() => { refresh(); loadIpos(); loadMembers(); timer = setInterval(() => { refresh(); loadIpos() }, 5000) })
 onBeforeUnmount(() => clearInterval(timer))
 </script>
 
@@ -159,6 +191,60 @@ onBeforeUnmount(() => clearInterval(timer))
           </tbody>
         </table>
       </div>
+    </section>
+
+    <section class="panel pad">
+      <h3>الأعضاء <span class="muted">{{ members.total }} عضو</span>
+        <input v-model="members.q" class="search" placeholder="بحث بالاسم أو الاسم المستعار أو الجوال" @input="searchMembers" /></h3>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>العضو</th><th>الجوال</th><th>الدور</th><th>الحالة</th><th>النقد المتاح</th><th>محجوز</th><th>أسهم</th><th>أوامر مفتوحة</th><th>التسجيل</th><th>إجراءات</th></tr></thead>
+          <tbody>
+            <template v-for="u in members.users" :key="u.id">
+              <tr>
+                <td><b>{{ u.alias }}</b><small>{{ u.name }}</small></td>
+                <td class="num">{{ u.mobile }}</td>
+                <td>
+                  <span v-if="u.id === state.user?.id">{{ ROLES[u.role] }} (أنت)</span>
+                  <select v-else :value="u.role" @change="setRole(u, $event.target.value)">
+                    <option v-for="(label, r) in ROLES" :key="r" :value="r">{{ label }}</option>
+                  </select>
+                </td>
+                <td :class="u.status === 'active' ? 'up' : 'down'">{{ STATUS[u.status] }}</td>
+                <td class="num">{{ money(u.cash) }}</td><td class="num muted">{{ money(u.reserved) }}</td>
+                <td class="num">{{ u.holdings }}</td><td class="num">{{ u.open_orders }}</td>
+                <td class="num muted">{{ joined(u.created_at) }}</td>
+                <td class="acts">
+                  <button class="small" @click="openForm(u, 'balance')">الرصيد</button>
+                  <template v-if="u.id !== state.user?.id">
+                    <button class="small" @click="openForm(u, 'password')">كلمة المرور</button>
+                    <button v-if="u.status === 'active'" class="small" @click="setStatus(u, 'suspended')">إيقاف</button>
+                    <button v-else class="small" @click="setStatus(u, 'active')">تفعيل</button>
+                    <button v-if="u.status !== 'banned'" class="small danger" @click="setStatus(u, 'banned')">حظر</button>
+                  </template>
+                </td>
+              </tr>
+              <tr v-if="editing.id === u.id" class="editrow">
+                <td colspan="10">
+                  <form v-if="editing.kind === 'balance'" class="row" @submit.prevent="moveBalance(u, 1)">
+                    <label>المبلغ (ريال)<input v-model="editing.value" type="number" min="0.01" step="0.01" required dir="ltr" /></label>
+                    <button class="primary small">إيداع في حسابه</button>
+                    <button type="button" class="small danger" @click="moveBalance(u, -1)">خصم من حسابه</button>
+                    <span class="muted">الخصم من النقد المتاح فقط، والمحجوز في الأوامر لا يُمس.</span>
+                  </form>
+                  <form v-else class="row" @submit.prevent="setPassword(u)">
+                    <label>كلمة مرور جديدة (8 أحرف على الأقل)<input v-model="editing.value" type="text" minlength="8" required dir="ltr" /></label>
+                    <button class="primary small">تغيير</button>
+                    <span class="muted">يخرج العضو من كل أجهزته ويدخل بالكلمة الجديدة.</span>
+                  </form>
+                </td>
+              </tr>
+            </template>
+            <tr v-if="!members.users.length"><td colspan="10" class="empty">لا يوجد أعضاء مطابقون</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted">الإيقاف والحظر يخرجان العضو من الموقع ويلغيان أوامره المفتوحة. الإيقاف مؤقت والحظر للمخالفين، وكلاهما يُرفع بزر "تفعيل".</p>
     </section>
 
     <section class="panel pad">

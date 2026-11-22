@@ -154,6 +154,7 @@ const tradeTotals = computed(() => {
 // ---- bank statement wording
 const ENTRY = {
   starting_balance: 'الرصيد الابتدائي', grant: 'إيداع', commission: 'عمولة تداول',
+  admin_deposit: 'إيداع من الإدارة', admin_withdraw: 'خصم من الإدارة',
   financing_grant: 'صرف تمويل', financing_repay: 'سداد تمويل', ipo_allocation: 'تخصيص اكتتاب',
 }
 const entryLabel = (e) => (e.type === 'trade' ? (e.amount > 0 ? 'بيع أسهم' : 'شراء أسهم') : ENTRY[e.type] ?? e.type)

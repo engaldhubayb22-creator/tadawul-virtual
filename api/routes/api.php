@@ -57,6 +57,11 @@ Route::prefix('v1')->group(function () {
             Route::put('companies/{symbol}/status', [AdminController::class, 'companyStatus']);
             Route::put('companies/{symbol}/fundamentals', [AdminController::class, 'fundamentals']);
             Route::post('news', [AdminController::class, 'news']);
+            Route::get('users', [AdminController::class, 'users']);
+            Route::put('users/{id}/status', [AdminController::class, 'userStatus']);
+            Route::put('users/{id}/role', [AdminController::class, 'userRole']);
+            Route::put('users/{id}/password', [AdminController::class, 'userPassword']);
+            Route::post('users/{id}/balance', [AdminController::class, 'userBalance']);
             Route::post('ipos', [IpoController::class, 'store']);
             Route::post('ipos/{id}/allocate', [IpoController::class, 'allocate']);
         });

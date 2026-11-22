@@ -216,7 +216,7 @@ class MarketController extends Controller
             LEFT JOIN cash ON cash.user_id = u.id
             LEFT JOIN stock ON stock.user_id = u.id
             LEFT JOIN debt ON debt.user_id = u.id
-            WHERE u.role = 'trader' AND u.status = 'active'
+            WHERE u.role <> 'bot' AND u.status = 'active'
             ORDER BY net_worth DESC, u.id
             LIMIT 50
             SQL);

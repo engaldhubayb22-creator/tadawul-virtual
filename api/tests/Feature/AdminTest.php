@@ -125,4 +125,62 @@ class AdminTest extends TestCase
         $this->assertSame(0, DB::table('bot_configs')->count());
         $this->assertSame(2, DB::table('news')->count());
     }
+
+    public function test_admin_manages_members(): void
+    {
+        $traderId = DB::table('users')->where('alias', 'trader')->value('id');
+        $adminId = DB::table('users')->where('alias', 'boss')->value('id');
+        DB::table('users')->insert(['name' => 'صندوق', 'alias' => 'mm-bot', 'mobile' => 'mm-bot', 'password' => '!', 'role' => 'bot']);
+        $botId = DB::table('users')->where('alias', 'mm-bot')->value('id');
+        $as = function (string $token) {
+            $this->app['auth']->forgetGuards();
+
+            return $this->withToken($token);
+        };
+
+        $as($this->trader)->getJson('/api/v1/admin/users')->assertStatus(403);
+        // Members only: the bot is not listed. Newest first.
+        $as($this->admin)->getJson('/api/v1/admin/users')->assertOk()
+            ->assertJsonPath('total', 2)->assertJsonCount(2, 'users')
+            ->assertJsonPath('users.0.alias', 'trader')
+            ->assertJsonPath('users.0.cash', 10000000)
+            ->assertJsonPath('users.1.role', 'admin');
+        $as($this->admin)->getJson('/api/v1/admin/users?q=0500000008')->assertOk()->assertJsonCount(1, 'users');
+        $as($this->admin)->putJson("/api/v1/admin/users/$botId/status", ['status' => 'banned'])->assertStatus(404);
+
+        // Deposit 5,000.00 then take 2,000.00 back; the ledger stays balanced.
+        $as($this->admin)->postJson("/api/v1/admin/users/$traderId/balance", ['amount' => 500000])->assertOk()->assertJsonPath('cash', 10500000);
+        $as($this->admin)->postJson("/api/v1/admin/users/$traderId/balance", ['amount' => -200000])->assertOk()->assertJsonPath('cash', 10300000);
+        $as($this->admin)->postJson("/api/v1/admin/users/$traderId/balance", ['amount' => -99999999999])->assertStatus(422);
+        $this->assertSame(0, (int) DB::table('ledger_accounts')->sum('balance'));
+        $as($this->trader)->getJson('/api/v1/bank')->assertOk()
+            ->assertJsonPath('statement.0.type', 'admin_withdraw')->assertJsonPath('statement.0.amount', -200000)
+            ->assertJsonPath('statement.1.type', 'admin_deposit')->assertJsonPath('statement.1.balance_after', 10500000);
+
+        // An admin cannot lock themselves out.
+        $as($this->admin)->putJson("/api/v1/admin/users/$adminId/status", ['status' => 'suspended'])->assertStatus(422);
+        $as($this->admin)->putJson("/api/v1/admin/users/$adminId/role", ['role' => 'trader'])->assertStatus(422);
+
+        // Suspending signs the member out and blocks signing in again.
+        $as($this->admin)->putJson("/api/v1/admin/users/$traderId/status", ['status' => 'suspended'])->assertOk();
+        $as($this->trader)->getJson('/api/v1/portfolio')->assertStatus(401);
+        $this->postJson('/api/v1/login', ['mobile' => '0500000008', 'password' => 'secret-pass-1'])->assertStatus(403);
+        $as($this->admin)->putJson("/api/v1/admin/users/$traderId/status", ['status' => 'active'])->assertOk();
+
+        // A new password replaces the old one.
+        $as($this->admin)->putJson("/api/v1/admin/users/$traderId/password", ['password' => 'short'])->assertStatus(422);
+        $as($this->admin)->putJson("/api/v1/admin/users/$traderId/password", ['password' => 'brand-new-pass'])->assertOk();
+        $this->postJson('/api/v1/login', ['mobile' => '0500000008', 'password' => 'secret-pass-1'])->assertStatus(401);
+        $token = $this->postJson('/api/v1/login', ['mobile' => '0500000008', 'password' => 'brand-new-pass'])->assertOk()->json('token');
+
+        // Promote to admin: the member reaches the panel.
+        $as($this->admin)->putJson("/api/v1/admin/users/$traderId/role", ['role' => 'admin'])->assertOk();
+        $as($token)->getJson('/api/v1/admin/overview')->assertOk();
+        $this->assertSame(6, DB::table('audit_logs')->where('action', 'like', 'user.%')->count());
+    }
+
+    public function test_whales_list_includes_admins(): void
+    {
+        $this->getJson('/api/v1/leaderboard')->assertOk()->assertJsonCount(2, 'traders');
+    }
 }
