@@ -12,3 +12,6 @@ Artisan::command('inspire', function () {
 
 // The market maker's analysis and plan. In shadow mode it places no orders.
 \Illuminate\Support\Facades\Schedule::command('maker:analyze')->everyFiveMinutes()->withoutOverlapping();
+
+// Closing the trading day by hand, when the admin asked for it.
+\Illuminate\Support\Facades\Schedule::command('market:roll-day')->everyMinute()->withoutOverlapping();

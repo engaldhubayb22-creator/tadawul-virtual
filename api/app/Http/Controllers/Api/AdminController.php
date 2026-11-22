@@ -53,6 +53,9 @@ class AdminController extends Controller
             }
         }
 
+        $settings['day_roll_pending'] = \App\Services\DayRoll::pending();
+        $settings['day_roll_done'] = \App\Services\DayRoll::last();
+
         $companies = DB::select(<<<'SQL'
             SELECT c.symbol, c.name, c.status, c.tick_size, d.low_limit, d.high_limit,
                    COALESCE((SELECT price FROM trades WHERE company_id = c.id ORDER BY id DESC LIMIT 1),
@@ -126,10 +129,12 @@ class AdminController extends Controller
      */
     public function rollDay(Request $request): JsonResponse
     {
-        $result = \App\Services\DayRoll::run();
-        $this->audit($request, 'market.roll_day', $result);
+        // Moving every trade and order can take a while on a busy market, so
+        // the scheduler does it rather than this request.
+        \App\Services\DayRoll::request();
+        $this->audit($request, 'market.roll_day', []);
 
-        return response()->json(['message' => 'أُغلق اليوم على أسعاره وبدأت جلسة جديدة'] + $result);
+        return response()->json(['message' => 'سيُغلق اليوم وتبدأ جلسة جديدة خلال دقيقة']);
     }
 
     public function bot(Request $request, string $symbol): JsonResponse

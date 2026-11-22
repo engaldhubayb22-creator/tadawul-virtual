@@ -54,7 +54,11 @@ class DayRollTest extends TestCase
                 VALUES (?, '1m', ?::timestamptz - make_interval(days => ?), 1050, 1050, 1050, 1050, 10)", [$company->id, $minute, $back]);
         }
 
-        $this->as($admin)->postJson('/api/v1/admin/roll-day')->assertOk()->assertJsonPath('day', $today);
+        $this->as($admin)->postJson('/api/v1/admin/roll-day')->assertOk();
+        $this->assertSame([], DB::table('daily_stats')->where('trade_date', $before)->get()->all());   // nothing moves until the scheduler runs
+        $this->as($admin)->getJson('/api/v1/admin/overview')->assertJsonPath('settings.day_roll_pending', true);
+        $this->artisan('market:roll-day')->assertSuccessful();
+        $this->as($admin)->getJson('/api/v1/admin/overview')->assertJsonPath('settings.day_roll_pending', false)->assertJsonPath('settings.day_roll_done.day', $today);
 
         $days = DB::table('daily_stats')->where('company_id', $company->id)->orderBy('trade_date')->pluck('close', 'trade_date')->all();
         $this->assertEquals([$before => 1000, $yesterday => 1050], $days);   // today closed at the last trade and became yesterday
@@ -65,7 +69,10 @@ class DayRollTest extends TestCase
             ->whereRaw("(created_at AT TIME ZONE 'Asia/Riyadh')::date = ?", [$yesterday])->count());   // the engine expires it as a day order
         $this->assertSame(1, (int) json_decode(DB::table('settings')->where('key', 'day_roll')->value('value')));
 
+        $this->artisan('market:roll-day')->assertSuccessful();   // not asked for: does nothing
+        $this->assertSame(1, (int) json_decode(DB::table('settings')->where('key', 'day_roll')->value('value')));
         $this->as($admin)->postJson('/api/v1/admin/roll-day')->assertOk();
+        $this->artisan('market:roll-day')->assertSuccessful();
         $this->assertSame(2, (int) json_decode(DB::table('settings')->where('key', 'day_roll')->value('value')));
         $this->assertSame(1, DB::table('audit_logs')->where('action', 'market.roll_day')->count() - 1);
     }

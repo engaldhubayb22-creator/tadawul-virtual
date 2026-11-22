@@ -52,6 +52,17 @@ for _ in $(seq 1 30); do
   if curl -fsS -o /dev/null "http://localhost:$port/"; then
     "${COMPOSE[@]}" ps
     docker image prune -f >/dev/null
+    # A look at the market after each deploy: is the engine running, and which days exist.
+    sleep 20
+    echo "==> Engine and bot, last lines"
+    "${COMPOSE[@]}" logs --tail 12 engine bot scheduler 2>&1 | cut -c1-300 || true
+    echo "==> Market state"
+    "${COMPOSE[@]}" exec -T postgres psql -U tadawul -d tadawul -At -c "
+      SELECT 'trades ' || count(*) || ', last ' || max(executed_at) FROM trades;
+      SELECT 'orders ' || count(*) FROM orders;
+      SELECT 'day ' || trade_date || ': ' || count(*) || ' companies, ' || count(close) || ' closed' FROM daily_stats GROUP BY trade_date ORDER BY trade_date DESC LIMIT 4;
+      SELECT 'setting ' || key || ' = ' || value FROM settings WHERE key LIKE 'day_roll%';
+      SELECT 'running ' || (now() - query_start) || ' ' || left(query, 80) FROM pg_stat_activity WHERE state <> 'idle' AND now() - query_start > interval '5 seconds';" || true
     echo "==> Site is up"
     exit 0
   fi

@@ -155,6 +155,7 @@ async function rollDay() {
   try {
     const r = await api('POST', '/admin/roll-day')
     toast(r.message, 'good')
+    refresh()
   } catch (e) { toast(e.message, 'bad') }
 }
 const toggleBots = () => call('PUT', '/settings', { bots_enabled: !data.value.settings.bots_enabled },
@@ -186,7 +187,9 @@ onBeforeUnmount(() => clearInterval(timer))
       <button v-for="t in ATABS" :key="t.id" :class="{ on: atab === t.id }" @click="atab = t.id">{{ t.label }}</button>
     </nav>
     <section v-show="atab === 'market'" class="panel pad">
-      <h3>السوق <button class="danger small" @click="rollDay">أغلق اليوم وابدأ جلسة جديدة</button></h3>
+      <h3>السوق <button class="danger small" :disabled="data.settings.day_roll_pending" @click="rollDay">
+        {{ data.settings.day_roll_pending ? 'جارٍ إغلاق اليوم…' : 'أغلق اليوم وابدأ جلسة جديدة' }}</button>
+        <span v-if="data.settings.day_roll_done" class="muted">آخر إغلاق يدوي: {{ new Date(data.settings.day_roll_done.at).toLocaleString('en-GB') }}</span></h3>
       <div class="row">
         <label>الافتتاح<input v-model="settings.market_open" type="time" dir="ltr" /></label>
         <label>الإغلاق<input v-model="settings.market_close" type="time" dir="ltr" /></label>

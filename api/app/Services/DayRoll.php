@@ -13,17 +13,18 @@ use Illuminate\Support\Facades\DB;
  */
 class DayRoll
 {
-    /** Columns holding a moment in time, moved back 24 hours. */
+    /** Moments in time, moved back 24 hours in one pass: nothing is unique on them. */
     private const MOMENTS = [
         'trades' => ['executed_at'],
         'orders' => ['created_at', 'updated_at'],
         'news' => ['created_at'],
-        'candles' => ['bucket'],
-        'maker_bars' => ['bucket'],
         'maker_alerts' => ['created_at', 'resolved_at'],
     ];
 
-    /** Columns holding a calendar day, moved back one day. */
+    /** Moments that are part of a key, moved in two steps. These tables are small. */
+    private const KEYED_MOMENTS = ['candles' => 'bucket', 'maker_bars' => 'bucket'];
+
+    /** Calendar days, moved back one day in two steps: they are part of a key. */
     private const DAYS = [
         'daily_stats' => 'trade_date',
         'maker_days' => 'trade_date',
@@ -34,10 +35,43 @@ class DayRoll
     /** Far enough that a row in transit never lands on another row's key. */
     private const AWAY = 200000;
 
-    /** @return array{closed: int, day: string} */
+    /** Ask for the day to be closed; the scheduler does it within a minute. */
+    public static function request(): void
+    {
+        self::put('day_roll_pending', true);
+    }
+
+    public static function pending(): bool
+    {
+        return (bool) json_decode(DB::table('settings')->where('key', 'day_roll_pending')->value('value') ?? 'false');
+    }
+
+    /** What the last closing did, or null. */
+    public static function last(): ?array
+    {
+        $raw = DB::table('settings')->where('key', 'day_roll_done')->value('value');
+
+        return $raw ? json_decode($raw, true) : null;
+    }
+
+    private static function put(string $key, mixed $value): void
+    {
+        DB::statement('INSERT INTO settings (key, value) VALUES (?, ?::jsonb)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()', [$key, json_encode($value)]);
+    }
+
+    /** @return array{closed: int, day: string, seconds: float} */
     public static function run(): array
     {
-        return DB::transaction(function () {
+        $started = microtime(true);
+        $result = DB::transaction(function () {
+            // Hold the engine off these tables for the whole move, rather than
+            // meeting it row by row. Give up quickly if it is mid-batch; the
+            // caller tries again.
+            DB::statement("SET LOCAL lock_timeout = '10s'");
+            DB::statement('LOCK TABLE orders, trades, candles, daily_stats, news, maker_bars, maker_days, maker_alerts
+                IN SHARE ROW EXCLUSIVE MODE');
+
             $tz = json_decode(DB::table('settings')->where('key', 'market_timezone')->value('value'));
             $today = DB::selectOne('SELECT (now() AT TIME ZONE ?)::date AS d', [$tz])->d;
 
@@ -49,11 +83,14 @@ class DayRoll
                     d.prev_close)
                 WHERE d.close IS NULL');
 
-            // Two steps, so no row passes through a day another row still holds.
             foreach (self::MOMENTS as $table => $columns) {
+                $set = implode(', ', array_map(fn ($c) => "$c = $c - interval '1 day'", $columns));
+                DB::update("UPDATE $table SET $set");
+            }
+            // Two steps, so no row passes through a key another row still holds.
+            foreach (self::KEYED_MOMENTS as $table => $column) {
                 foreach ([-self::AWAY, self::AWAY - 1] as $days) {
-                    $set = implode(', ', array_map(fn ($c) => "$c = $c + make_interval(days => $days)", $columns));
-                    DB::update("UPDATE $table SET $set");
+                    DB::update("UPDATE $table SET $column = $column + make_interval(days => $days)");
                 }
             }
             foreach (self::DAYS as $table => $column) {
@@ -70,5 +107,10 @@ class DayRoll
 
             return ['closed' => $closed, 'day' => $today];
         });
+        $result['seconds'] = round(microtime(true) - $started, 1);
+        self::put('day_roll_pending', false);
+        self::put('day_roll_done', $result + ['at' => now()->toIso8601String()]);
+
+        return $result;
     }
 }
