@@ -67,14 +67,27 @@ const STATUS = {
   cancelled: 'أُلغي الأمر', rejected: 'رُفض الأمر', expired: 'انتهت صلاحية الأمر',
 }
 
+// Notifications. A message that repeats while it is still on screen (a large
+// order filling in many parts) is counted on the one notification instead of
+// stacking, and at most three are shown at once.
 let toastId = 0
+const toastTimers = new Map()
+function dropToast(id) {
+  clearTimeout(toastTimers.get(id)); toastTimers.delete(id)
+  const i = state.toasts.findIndex((t) => t.id === id)
+  if (i >= 0) state.toasts.splice(i, 1)
+}
 export function toast(text, kind = 'info') {
-  const id = ++toastId
-  state.toasts.push({ id, text, kind })
-  setTimeout(() => {
-    const i = state.toasts.findIndex((t) => t.id === id)
-    if (i >= 0) state.toasts.splice(i, 1)
-  }, 4000)
+  let t = state.toasts.find((x) => x.text === text && x.kind === kind)
+  if (t) t.count++
+  else {
+    state.toasts.push({ id: ++toastId, text, kind, count: 1 })
+    t = state.toasts.at(-1)
+    while (state.toasts.length > 3) dropToast(state.toasts[0].id)
+  }
+  const id = t.id
+  clearTimeout(toastTimers.get(id))
+  toastTimers.set(id, setTimeout(() => dropToast(id), 4000))
 }
 
 // ---------------------------------------------------------------- REST

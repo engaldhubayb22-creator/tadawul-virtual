@@ -654,6 +654,6 @@ onMounted(async () => {
   </div>
   </div>
 
-  <div class="toasts"><div v-for="t in state.toasts" :key="t.id" class="toast" :class="t.kind">{{ t.text }}</div></div>
+  <div class="toasts"><div v-for="t in state.toasts" :key="t.id" class="toast" :class="t.kind">{{ t.text }}<b v-if="t.count > 1" class="num" dir="ltr">×{{ t.count }}</b></div></div>
   <AuthModal v-if="state.showAuth" />
 </template>

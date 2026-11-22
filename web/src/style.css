@@ -127,8 +127,10 @@ td small { display: block; color: var(--muted); font-size: 11px; }
 .worth { margin-inline-start: auto; color: var(--muted); font-size: 12px; }
 .worth b { color: var(--text); }
 
-.toasts { position: fixed; bottom: 14px; inset-inline-start: 14px; display: grid; gap: 8px; z-index: 30; }
+/* Top centre, clear of the side menu and the order ticket. */
+.toasts { position: fixed; top: 52px; left: 50%; transform: translateX(-50%); display: grid; gap: 6px; justify-items: center; z-index: 30; pointer-events: none; }
 .toast { background: #1d2836; border: 1px solid var(--line); border-inline-start: 3px solid var(--accent); padding: 8px 14px; border-radius: 6px; }
+.toast b { display: inline-block; margin-inline-start: 8px; color: var(--muted); }
 .toast.good { border-inline-start-color: var(--up); } .toast.bad { border-inline-start-color: var(--down); }
 
 .overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); display: grid; place-items: center; z-index: 20; padding: 16px; }
