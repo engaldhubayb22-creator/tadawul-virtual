@@ -85,7 +85,12 @@ class DayRoll
 
             foreach (self::MOMENTS as $table => $columns) {
                 $set = implode(', ', array_map(fn ($c) => "$c = $c - interval '1 day'", $columns));
-                DB::update("UPDATE $table SET $set");
+                // The bots' finished orders are millions of rows nobody reads by
+                // date: only members' orders and the ones still open move.
+                $where = $table === 'orders'
+                    ? " WHERE status IN ('new', 'open', 'partial') OR user_id NOT IN (SELECT id FROM users WHERE role = 'bot')"
+                    : '';
+                DB::update("UPDATE $table SET $set$where");
             }
             // Two steps, so no row passes through a key another row still holds.
             foreach (self::KEYED_MOMENTS as $table => $column) {
