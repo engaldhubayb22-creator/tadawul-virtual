@@ -201,6 +201,37 @@ class CommunityTest extends TestCase
         $this->getJson('/api/v1/forum/boards')->assertJsonCount(3, 'categories');
     }
 
+    public function test_forum_uploads_images_and_attachments(): void
+    {
+        \Illuminate\Support\Facades\Storage::fake('forum');
+        $file = fn (string $name, int $kb = 10) => \Illuminate\Http\UploadedFile::fake()->create($name, $kb);
+        $image = \Illuminate\Http\UploadedFile::fake()->image('شارت أرامكو.png', 400, 300);
+
+        $this->post('/api/v1/forum/uploads', ['file' => $image], ['Accept' => 'application/json'])->assertStatus(401);
+        $up = fn ($f) => $this->as($this->user)->post('/api/v1/forum/uploads', ['file' => $f], ['Accept' => 'application/json']);
+
+        // A real picture is stored and served inline, to anyone, cacheable and never sniffed.
+        $id = $up($image)->assertCreated()->assertJsonPath('is_image', true)->assertJsonPath('name', 'شارت أرامكو.png')->json('id');
+        $this->get("/api/v1/forum/files/$id")->assertOk()
+            ->assertHeader('Content-Type', 'image/png')->assertHeader('X-Content-Type-Options', 'nosniff');
+        $this->assertStringContainsString('immutable', $this->get("/api/v1/forum/files/$id")->headers->get('Cache-Control'));
+
+        // A document comes back as a download, never as a page.
+        $doc = $up(\Illuminate\Http\UploadedFile::fake()->createWithContent('تقرير.txt', "نتائج الربع الثالث\n"))->assertCreated()
+            ->assertJsonPath('is_image', false)->json('id');
+        $res = $this->get("/api/v1/forum/files/$doc")->assertOk()->assertHeader('Content-Type', 'application/octet-stream');
+        $this->assertStringStartsWith('attachment;', $res->headers->get('Content-Disposition'));
+
+        // Refused: a script, a web page, an SVG, something named .png that is not a picture, and oversized files.
+        $up($file('shell.php'))->assertStatus(422);
+        $up(\Illuminate\Http\UploadedFile::fake()->createWithContent('page.html', '<script>alert(1)</script>'))->assertStatus(422);
+        $up(\Illuminate\Http\UploadedFile::fake()->createWithContent('logo.svg', '<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>'))->assertStatus(422);
+        $up(\Illuminate\Http\UploadedFile::fake()->createWithContent('fake.png', 'not a picture at all'))->assertStatus(422);
+        $up($file('big.pdf', 10241))->assertStatus(422);
+        $this->get('/api/v1/forum/files/999999')->assertStatus(404);
+        $this->assertSame(2, DB::table('forum_files')->count());
+    }
+
     private function adminId(): int
     {
         return (int) DB::table('users')->where('alias', 'boss')->value('id');

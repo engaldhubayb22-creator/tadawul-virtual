@@ -28,6 +28,7 @@ Route::prefix('v1')->group(function () {
     Route::get('ipos', [IpoController::class, 'index']);
     Route::get('chat/{room}', [CommunityController::class, 'chatHistory']);
     Route::get('forum/boards', [ForumController::class, 'index']);
+    Route::get('forum/files/{id}', [ForumController::class, 'file'])->whereNumber('id');
     Route::get('forum', [ForumController::class, 'threads']);
     Route::get('forum/{id}', [ForumController::class, 'thread'])->whereNumber('id');
     Route::get('market/{symbol}/holders', [MarketController::class, 'holders']);
@@ -55,6 +56,7 @@ Route::prefix('v1')->group(function () {
         Route::put('forum/posts/{id}', [ForumController::class, 'updatePost']);
         Route::delete('forum/posts/{id}', [ForumController::class, 'deletePost']);
         Route::put('forum/signature', [ForumController::class, 'signature']);
+        Route::post('forum/uploads', [ForumController::class, 'upload'])->middleware('throttle:uploads');
         Route::get('financing', [FinancingController::class, 'show']);
         Route::post('financing', [FinancingController::class, 'store']);
         Route::post('financing/repay', [FinancingController::class, 'repay']);

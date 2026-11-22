@@ -245,6 +245,26 @@ td small.tag { display: inline; border: 1px solid var(--line); border-radius: 4p
 .fbody { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.9; }
 .fbody blockquote { margin: 6px 0; padding: 8px 12px; background: #0d131c; border: 1px solid var(--line); border-inline-start: 3px solid var(--accent); border-radius: 4px; color: #b9c7d8; }
 .fbody blockquote cite { display: block; font-style: normal; font-weight: 600; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.fbody a { text-decoration: underline; }
+.fbody ul, .fbody ol { margin: 4px 0; padding-inline-start: 26px; white-space: normal; }
+.fbody pre { margin: 6px 0; padding: 10px 12px; background: #0a0f16; border: 1px solid var(--line); border-radius: 4px; direction: ltr; text-align: left; overflow-x: auto; font-family: "Courier New", monospace; font-size: 13px; }
+.fbody hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+.fbody .fimg { display: inline-block; max-width: 100%; }
+.fbody .fimg img { display: block; max-width: 100%; max-height: 520px; border: 1px solid var(--line); border-radius: 6px; }
+.fbody .fattach { display: inline-block; padding: 6px 12px; margin: 2px 0; background: #0d131c; border: 1px solid var(--line); border-radius: 6px; text-decoration: none; }
+/* the post editor */
+.feditor { display: grid; gap: 6px; }
+.ftools { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; padding: 6px; background: #0f1620; border: 1px solid var(--line); border-radius: 6px; }
+.ftools button { padding: 4px 9px; font-size: 13px; min-width: 30px; }
+.ftools button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ftools select { padding: 4px 6px; font-size: 13px; }
+.ftools .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 3px; }
+.fpanel { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px; background: #0f1620; border: 1px solid var(--line); border-radius: 6px; }
+.fpanel input { flex: 1; min-width: 220px; }
+.fpanel .swatch { width: 28px; height: 28px; padding: 0; border-radius: 50%; border: 2px solid #2a3442; }
+.fpanel .smiley { padding: 2px 6px; font-size: 20px; border: 0; background: none; }
+.fpreview { min-height: 60px; padding: 12px 14px; background: #0d131c; border: 1px dashed var(--line); border-radius: 6px; }
+.fnote { margin: 0; } .flabel { color: var(--muted); font-size: 12px; }
 .edited { color: var(--muted); font-style: italic; }
 .sig { border-top: 1px dashed var(--line); padding-top: 8px; color: var(--muted); font-size: 13px; }
 .fpost > footer { display: flex; gap: 6px; justify-content: flex-end; padding: 6px 12px; background: #0f1620; border-top: 1px solid var(--line); }

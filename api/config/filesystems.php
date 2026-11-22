@@ -38,6 +38,15 @@ return [
             'report' => false,
         ],
 
+        // Forum images and attachments. In production this directory is a
+        // volume, so uploads survive a redeploy.
+        'forum' => [
+            'driver' => 'local',
+            'root' => storage_path('app/forum'),
+            'throw' => true,
+            'report' => false,
+        ],
+
         'public' => [
             'driver' => 'local',
             'root' => storage_path('app/public'),

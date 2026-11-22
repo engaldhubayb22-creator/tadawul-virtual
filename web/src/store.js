@@ -148,6 +148,21 @@ export async function loadBank() {
   state.statement = data.statement
 }
 
+// Upload a picture or an attachment for a forum post.
+export async function uploadForumFile(file) {
+  if (DEMO) throw new Error('رفع الملفات غير متاح في النسخة التجريبية')
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch('/api/v1/forum/uploads', {
+    method: 'POST', headers: { Accept: 'application/json', Authorization: 'Bearer ' + state.token }, body: form })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const first = data.errors ? Object.values(data.errors)[0][0] : data.message
+    throw new Error(first || (res.status === 413 ? 'حجم الملف أكبر من المسموح' : 'تعذّر رفع الملف'))
+  }
+  return data
+}
+
 // Loans against pledged shares.
 export async function loadPledges() {
   if (state.token) state.pledges = await api('GET', '/pledges')

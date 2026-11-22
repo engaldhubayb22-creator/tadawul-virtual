@@ -113,6 +113,8 @@ services:
     image: tadawul-virtual-api
     restart: unless-stopped
     environment: *api-env
+    volumes:
+      - forumfiles:/var/www/html/storage/app/forum   # forum images and attachments
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
@@ -140,3 +142,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  forumfiles:

@@ -450,6 +450,21 @@ CREATE INDEX IF NOT EXISTS forum_threads_board ON forum_threads (board_id, pinne
 CREATE INDEX IF NOT EXISTS forum_threads_user ON forum_threads (user_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS forum_posts_user ON forum_posts (user_id) WHERE deleted_at IS NULL;
 
+-- Images and attachments members upload to use in forum posts. The file
+-- itself is on disk under a random name; `name` is what the member called it.
+CREATE TABLE IF NOT EXISTS forum_files (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL REFERENCES users (id),
+    name       TEXT   NOT NULL,
+    path       TEXT   NOT NULL,
+    mime       TEXT   NOT NULL,
+    size       BIGINT NOT NULL CHECK (size > 0),
+    is_image   BOOLEAN NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS forum_files_user ON forum_files (user_id, created_at);
+
 -- A starting layout, only when no section exists yet. The admin can change it.
 DO $$
 DECLARE general INT; market INT; site INT;

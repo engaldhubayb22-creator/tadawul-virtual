@@ -6,6 +6,9 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * The forum, laid out like a classic bulletin board: categories hold forums,
@@ -284,6 +287,69 @@ class ForumController extends Controller
         DB::table('users')->where('id', $request->user()->id)->update(['forum_signature' => trim((string) $data['signature'])]);
 
         return response()->json(['signature' => trim((string) $data['signature'])]);
+    }
+
+    // ------------------------------------------------------------ uploads
+
+    private const IMAGE_TYPES = [IMAGETYPE_JPEG => 'image/jpeg', IMAGETYPE_PNG => 'image/png', IMAGETYPE_GIF => 'image/gif', IMAGETYPE_WEBP => 'image/webp'];
+
+    private const IMAGE_MAX_KB = 5120;
+
+    private const FILE_MAX_KB = 10240;
+
+    /**
+     * Upload an image or an attachment to use in a post. Images are checked
+     * by their content, not their name, and only pictures a browser can show
+     * safely are accepted (no SVG). Everything else is offered as a download.
+     */
+    public function upload(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file' => ['required', 'file', 'max:'.self::FILE_MAX_KB,
+                'mimes:jpg,jpeg,png,gif,webp,pdf,doc,docx,xls,xlsx,ppt,pptx,txt,csv,zip'],
+        ], [
+            'file.max' => 'حجم الملف أكبر من 10 ميجابايت',
+            'file.mimes' => 'نوع الملف غير مسموح. المسموح: صور، PDF، Word، Excel، PowerPoint، نص، CSV، ZIP',
+            'file.uploaded' => 'تعذّر رفع الملف، قد يكون حجمه أكبر من المسموح',
+        ]);
+        $file = $request->file('file');
+        $type = @getimagesize($file->getRealPath())[2] ?? null;
+        $isImage = isset(self::IMAGE_TYPES[$type]);
+        if (in_array(strtolower($file->getClientOriginalExtension()), ['jpg', 'jpeg', 'png', 'gif', 'webp'], true) && ! $isImage) {
+            return response()->json(['message' => 'الملف ليس صورة صحيحة'], 422);
+        }
+        if ($isImage && $file->getSize() > self::IMAGE_MAX_KB * 1024) {
+            return response()->json(['message' => 'حجم الصورة أكبر من 5 ميجابايت'], 422);
+        }
+
+        $path = date('Y/m').'/'.Str::random(40);
+        Storage::disk('forum')->putFileAs(dirname($path), $file, basename($path));
+        $name = Str::limit(trim(preg_replace('/[\x00-\x1f\/\\\\\[\]"<>]+/u', ' ', $file->getClientOriginalName())), 120, '') ?: 'file';
+        $id = DB::table('forum_files')->insertGetId([
+            'user_id' => $request->user()->id, 'name' => $name, 'path' => $path,
+            'mime' => $isImage ? self::IMAGE_TYPES[$type] : 'application/octet-stream',
+            'size' => $file->getSize(), 'is_image' => $isImage,
+        ]);
+
+        return response()->json(['id' => $id, 'name' => $name, 'size' => $file->getSize(), 'is_image' => $isImage], 201);
+    }
+
+    /** Serve an upload: images inline, anything else as a download. Uploads never change, so browsers may keep them. */
+    public function file(int $id): Response
+    {
+        $file = DB::table('forum_files')->where('id', $id)->first();
+        abort_if($file === null || ! Storage::disk('forum')->exists($file->path), 404, 'الملف غير موجود');
+        $headers = [
+            'Content-Type' => $file->mime,
+            'X-Content-Type-Options' => 'nosniff',
+            'Cache-Control' => 'public, max-age=31536000, immutable',
+            'Content-Security-Policy' => "default-src 'none'; sandbox",
+        ];
+        $full = Storage::disk('forum')->path($file->path);
+
+        return $file->is_image
+            ? response()->file($full, $headers)
+            : response()->download($full, $file->name, $headers);
     }
 
     // ------------------------------------------------------------ sections (admin)

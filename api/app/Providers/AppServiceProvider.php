@@ -27,6 +27,10 @@ class AppServiceProvider extends ServiceProvider
         // Chat: a message every few seconds is conversation, more is flooding.
         RateLimiter::for('chat', fn (Request $request) => Limit::perMinute(20)->by('chat:'.$request->user()?->id));
         RateLimiter::for('forum', fn (Request $request) => Limit::perMinute(6)->by('forum:'.$request->user()?->id));
+        RateLimiter::for('uploads', fn (Request $request) => [
+            Limit::perMinute(10)->by('uploads-m:'.$request->user()?->id),
+            Limit::perHour(60)->by('uploads-h:'.$request->user()?->id),
+        ]);
 
         RateLimiter::for('orders', fn (Request $request) => [
             Limit::perSecond(20)->by('orders-s:'.$request->user()?->id),

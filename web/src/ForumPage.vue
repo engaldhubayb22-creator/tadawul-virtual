@@ -3,6 +3,8 @@
 // forums, a forum's thread list, and a thread with its posts and a member
 // panel beside each one.
 import { computed, h, onMounted, reactive, ref } from 'vue'
+import ForumEditor from './ForumEditor.vue'
+import { renderBBCode } from './bbcode'
 import { api, isoTime, state, toast } from './store'
 
 const view = ref('index') // index | board | thread | new
@@ -36,32 +38,7 @@ const openThread = (id, page = 1) => guard(async () => {
 const reloadThread = (page = thread.value.page) => openThread(thread.value.thread.id, page)
 onMounted(openIndex)
 
-// ---- BBCode: [b] [i] [u] [quote] [quote=name]. Text is never treated as HTML.
-function parse(text) {
-  const re = /\[(\/?)(b|i|u|quote)(?:=([^\]\n]{1,40}))?\]/gi
-  const root = { children: [] }
-  const stack = [root]
-  let last = 0, m
-  while ((m = re.exec(text))) {
-    if (m.index > last) stack.at(-1).children.push(text.slice(last, m.index))
-    const tag = m[2].toLowerCase()
-    if (!m[1]) {
-      const node = { tag, arg: m[3], children: [] }
-      stack.at(-1).children.push(node); stack.push(node)
-    } else {
-      const at = stack.findLastIndex((n) => n.tag === tag)
-      if (at > 0) stack.length = at
-      else stack.at(-1).children.push(m[0])
-    }
-    last = re.lastIndex
-  }
-  if (last < text.length) stack.at(-1).children.push(text.slice(last))
-  return root.children
-}
-const paint = (nodes) => nodes.map((n) => (typeof n === 'string' ? n
-  : n.tag === 'quote' ? h('blockquote', [n.arg ? h('cite', n.arg + ' كتب:') : null, ...paint(n.children)])
-    : h(n.tag, paint(n.children))))
-const PostBody = (props) => h('div', { class: 'fbody' }, paint(parse(props.text ?? '')))
+const PostBody = (props) => h('div', { class: 'fbody' }, renderBBCode(props.text))
 PostBody.props = ['text']
 
 // ---- writing
@@ -70,13 +47,6 @@ const draft = reactive({ title: '', body: '', symbol: '' })
 const editing = reactive({ id: null, title: '', body: '' }) // id 0 = the opening post
 const replyBox = ref(null)
 
-function wrap(target, tag) {
-  const el = target.el
-  const start = el?.selectionStart ?? 0, end = el?.selectionEnd ?? 0
-  const text = target.get()
-  target.set(text.slice(0, start) + `[${tag}]` + text.slice(start, end) + `[/${tag}]` + text.slice(end))
-}
-const replyTarget = { get el() { return replyBox.value }, get: () => reply.value, set: (v) => { reply.value = v } }
 function quote(author, text) {
   if (!needUser()) return
   // Quote the words, not earlier quotes nested inside them.
@@ -238,8 +208,8 @@ const pageList = (pages) => Array.from({ length: pages }, (_, i) => i + 1)
             <option value="">موضوع عام</option>
             <option v-for="s in state.symbols" :key="s" :value="s">{{ state.companies[s].name }} ({{ s }})</option>
           </select></label>
-        <label>نص الموضوع<textarea v-model="draft.body" rows="10" required maxlength="10000"></textarea></label>
-        <small class="muted">للتنسيق: [b]عريض[/b] · [i]مائل[/i] · [u]تحته خط[/u] · [quote]اقتباس[/quote]</small>
+        <div class="flabel">نص الموضوع</div>
+        <ForumEditor v-model="draft.body" :rows="12" />
         <div class="actions"><button class="primary" :disabled="busy">انشر الموضوع</button>
           <button type="button" @click="view = 'board'">إلغاء</button></div>
       </form>
@@ -282,7 +252,7 @@ const pageList = (pages) => Array.from({ length: pages }, (_, i) => i + 1)
             <div class="fcontent">
               <form v-if="editing.id === 0" class="editor" @submit.prevent="saveEdit">
                 <label>العنوان<input v-model="editing.title" required minlength="3" maxlength="150" /></label>
-                <textarea v-model="editing.body" rows="8" required maxlength="10000"></textarea>
+                <ForumEditor v-model="editing.body" :rows="8" />
                 <div class="actions"><button class="primary small" :disabled="busy">حفظ</button><button type="button" class="small" @click="editing.id = null">إلغاء</button></div>
               </form>
               <template v-else>
@@ -309,7 +279,7 @@ const pageList = (pages) => Array.from({ length: pages }, (_, i) => i + 1)
             </aside>
             <div class="fcontent">
               <form v-if="editing.id === p.id" class="editor" @submit.prevent="saveEdit">
-                <textarea v-model="editing.body" rows="6" required maxlength="10000"></textarea>
+                <ForumEditor v-model="editing.body" :rows="6" />
                 <div class="actions"><button class="primary small" :disabled="busy">حفظ</button><button type="button" class="small" @click="editing.id = null">إلغاء</button></div>
               </form>
               <template v-else>
@@ -333,13 +303,7 @@ const pageList = (pages) => Array.from({ length: pages }, (_, i) => i + 1)
       <section v-if="!thread.thread.locked || isStaff" class="tbox">
         <h2 class="tcat">الرد السريع</h2>
         <form v-if="state.user" class="editor" @submit.prevent="sendReply">
-          <div class="toolbar">
-            <button type="button" class="small" title="عريض" @click="wrap(replyTarget, 'b')"><b>B</b></button>
-            <button type="button" class="small" title="مائل" @click="wrap(replyTarget, 'i')"><i>I</i></button>
-            <button type="button" class="small" title="تحته خط" @click="wrap(replyTarget, 'u')"><u>U</u></button>
-            <button type="button" class="small" @click="wrap(replyTarget, 'quote')">اقتباس</button>
-          </div>
-          <textarea ref="replyBox" v-model="reply" rows="6" required maxlength="10000" placeholder="اكتب ردّك هنا"></textarea>
+          <ForumEditor ref="replyBox" v-model="reply" :rows="7" placeholder="اكتب ردّك هنا" />
           <div class="actions"><button class="primary" :disabled="busy">أضف الرد</button></div>
         </form>
         <p v-else class="empty"><a @click="state.showAuth = true">سجّل الدخول</a> لتضيف ردًّا.</p>
