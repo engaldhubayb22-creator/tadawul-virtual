@@ -3,6 +3,7 @@
 // The engine applies changes within five seconds and the bot on its next cycle.
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import AdminCompanies from './AdminCompanies.vue'
+import AdminForum from './AdminForum.vue'
 import { api, isoTime, money, state, toast } from './store'
 
 const data = ref(null)
@@ -35,7 +36,7 @@ const atab = ref('market')
 const ATABS = [
   { id: 'market', label: 'السوق وصانع السوق' }, { id: 'members', label: 'الأعضاء' },
   { id: 'companies', label: 'الشركات والأسهم' }, { id: 'transfer', label: 'نقل ملكية الأسهم' },
-  { id: 'ipos', label: 'الاكتتابات' }, { id: 'news', label: 'الأخبار والإعلانات' },
+  { id: 'ipos', label: 'الاكتتابات' }, { id: 'news', label: 'الأخبار والإعلانات' }, { id: 'forum', label: 'المنتدى' },
 ]
 
 // ---- members
@@ -336,6 +337,7 @@ onBeforeUnmount(() => clearInterval(timer))
     </section>
 
     <AdminCompanies v-if="atab === 'companies'" />
+    <AdminForum v-if="atab === 'forum'" />
 
     <section v-show="atab === 'transfer'" class="panel pad">
       <h3>نقل ملكية الأسهم <span class="muted">من عضو إلى عضو، خارج السوق وبدون نقد</span></h3>

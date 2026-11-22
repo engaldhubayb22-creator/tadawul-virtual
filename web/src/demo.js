@@ -276,14 +276,24 @@ export async function demoApi(method, path, body) {
       return financing()
     case 'GET chat/' + p[1]: return { room: p[1], messages: (chat[p[1]] ?? []).map((m) => ({ ...m })) }
     case 'POST chat/' + p[1]: need(); return { id: say(p[1], me.user.alias, String(body.text).slice(0, 300)).id }
-    case 'GET forum': {
-      const sym = new URLSearchParams(query).get('symbol')
-      return { threads: forum.filter((t) => !sym || t.symbol === sym).map((t) => ({ id: t.id, title: t.title, alias: t.alias, symbol: t.symbol, company: t.symbol && co[t.symbol].name, reply_count: t.posts.length })).reverse() }
-    }
+    case 'GET forum/boards': return {
+      categories: [{ id: 1, name: 'منتديات السوق', boards: [{ id: 2, name: 'المنتدى العام', description: 'نقاشات السوق والتحليلات', staff_only: false,
+        threads: forum.length, posts: forum.reduce((n, t) => n + 1 + t.posts.length, 0),
+        last: forum.length ? { thread_id: forum.at(-1).id, title: forum.at(-1).title, alias: forum.at(-1).alias, at: new Date().toISOString() } : null }] }],
+      stats: { threads: forum.length, posts: forum.reduce((n, t) => n + 1 + t.posts.length, 0), members: 3, newest_member: me.user?.alias ?? 'نورة_ت' } }
+    case 'GET forum': return {
+      board: { id: 2, name: 'المنتدى العام', description: 'نقاشات السوق والتحليلات', staff_only: false, category: 'منتديات السوق' },
+      threads: forum.map((t) => ({ id: t.id, title: t.title, alias: t.alias, symbol: t.symbol, company: t.symbol && co[t.symbol].name,
+        reply_count: t.posts.length, views: 12 + t.posts.length, pinned: false, locked: false, last_post_at: new Date().toISOString(),
+        last_alias: t.posts.at(-1)?.alias ?? t.alias })).reverse(),
+      page: 1, pages: 1, total: forum.length }
     case 'GET forum/*': {
       const t = forum.find((x) => x.id === Number(p[1]))
       if (!t) throw new Error('الموضوع غير موجود')
-      return { thread: { id: t.id, title: t.title, body: t.body, alias: t.alias, symbol: t.symbol, company: t.symbol && co[t.symbol].name }, posts: t.posts }
+      const who = (alias) => ({ alias, role: 'trader', joined_at: new Date().toISOString(), posts: 1, rank: 'عضو جديد', signature: '' })
+      return { thread: { id: t.id, title: t.title, body: t.body, alias: t.alias, user_id: -1, symbol: t.symbol, company: t.symbol && co[t.symbol].name,
+        created_at: new Date().toISOString(), reply_count: t.posts.length, views: 12, pinned: false, locked: false, board_id: 2, board: 'المنتدى العام', author: who(t.alias) },
+        posts: t.posts.map((x, i) => ({ ...x, user_id: -1, number: i + 2, created_at: new Date().toISOString(), author: who(x.alias) })), page: 1, pages: 1 }
     }
     case 'POST forum': need(); forum.push({ id: ++nextId, title: body.title, body: body.body, alias: me.user.alias, symbol: body.symbol || null, posts: [] }); return { id: nextId }
     case 'POST forum/*/posts': {

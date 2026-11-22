@@ -97,4 +97,112 @@ class CommunityTest extends TestCase
         $this->getJson('/api/v1/forum')->assertJsonCount(1, 'threads');
         $this->as($this->user)->postJson("/api/v1/forum/$general/posts", ['body' => 'رد على محذوف'])->assertStatus(404);
     }
+
+    public function test_forum_sections_pages_and_moderation(): void
+    {
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class); // more posts than the per-minute limit
+        // The starting layout: three categories, forums inside them.
+        $index = $this->getJson('/api/v1/forum/boards')->assertOk()
+            ->assertJsonCount(3, 'categories')->assertJsonPath('categories.0.name', 'القسم العام')
+            ->assertJsonPath('categories.0.boards.0.name', 'إعلانات الإدارة')->assertJsonPath('categories.0.boards.0.staff_only', true)
+            ->assertJsonPath('stats.threads', 0)->assertJsonPath('stats.members', 2)->assertJsonPath('stats.newest_member', 'boss')
+            ->json();
+        $announcements = $index['categories'][0]['boards'][0]['id'];
+        $general = $index['categories'][0]['boards'][1]['id'];
+        $analysis = $index['categories'][1]['boards'][0]['id'];
+
+        // Only staff open threads in the announcements forum; anyone may reply there.
+        $this->as($this->user)->postJson('/api/v1/forum', ['title' => 'إعلان مني', 'body' => 'نص', 'board_id' => $announcements])->assertStatus(403);
+        $notice = $this->as($this->admin)->postJson('/api/v1/forum', ['title' => 'قوانين المنتدى', 'body' => 'اقرأها.', 'board_id' => $announcements])->assertCreated()->json('id');
+        $this->as($this->user)->postJson("/api/v1/forum/$notice/posts", ['body' => 'تم.'])->assertCreated();
+        $this->as($this->user)->postJson('/api/v1/forum', ['title' => 'بلا منتدى', 'body' => 'نص', 'board_id' => 999999])->assertStatus(404);
+        // With no forum chosen, a company thread lands in stock analysis.
+        $auto = $this->as($this->user)->postJson('/api/v1/forum', ['title' => 'تحليل أرامكو', 'body' => 'نص', 'symbol' => '2222'])->assertCreated()->json('id');
+        $this->assertSame($analysis, DB::table('forum_threads')->where('id', $auto)->value('board_id'));
+
+        // A long thread: 17 replies make two pages of 15 posts, the opening post counted.
+        $thread = $this->as($this->user)->postJson('/api/v1/forum', ['title' => 'نقاش طويل', 'body' => 'البداية', 'board_id' => $general])->assertCreated()->json('id');
+        foreach (range(1, 17) as $n) {
+            DB::table('forum_posts')->insert(['thread_id' => $thread, 'user_id' => $this->adminId(), 'body' => "رد $n"]);
+        }
+        DB::table('forum_threads')->where('id', $thread)->update(['reply_count' => 17]);
+        $this->getJson("/api/v1/forum/$thread")->assertOk()
+            ->assertJsonPath('pages', 2)->assertJsonPath('page', 1)->assertJsonCount(14, 'posts')
+            ->assertJsonPath('thread.author.alias', 'talker')->assertJsonPath('thread.author.rank', 'عضو جديد')
+            ->assertJsonPath('thread.author.posts', 3)->assertJsonPath('thread.board', 'المنتدى العام')
+            ->assertJsonPath('posts.0.number', 2)->assertJsonPath('posts.0.author.rank', 'مدير الموقع')
+            ->assertJsonPath('thread.views', 1);
+        $this->getJson("/api/v1/forum/$thread?page=last")->assertOk()
+            ->assertJsonPath('page', 2)->assertJsonCount(3, 'posts')
+            ->assertJsonPath('posts.0.number', 16)->assertJsonPath('posts.2.body', 'رد 17')->assertJsonPath('thread.views', 2);
+
+        // The forum's thread list, and the front page counts and last post.
+        $this->getJson("/api/v1/forum?board=$general")->assertOk()
+            ->assertJsonPath('board.name', 'المنتدى العام')->assertJsonPath('board.category', 'القسم العام')
+            ->assertJsonPath('total', 1)->assertJsonPath('pages', 1)
+            ->assertJsonPath('threads.0.reply_count', 17)->assertJsonPath('threads.0.last_alias', 'talker');
+        $this->getJson('/api/v1/forum?board=999999')->assertStatus(404);
+        $this->getJson('/api/v1/forum/boards')->assertOk()
+            ->assertJsonPath('categories.0.boards.1.threads', 1)->assertJsonPath('categories.0.boards.1.posts', 18)
+            ->assertJsonPath('categories.0.boards.0.last.title', 'قوانين المنتدى')->assertJsonPath('categories.0.boards.0.last.alias', 'talker')
+            ->assertJsonPath('stats.threads', 3)->assertJsonPath('stats.posts', 21);
+
+        // Editing: the author edits their own thread and reply; another member cannot.
+        $this->as($this->user)->putJson("/api/v1/forum/$thread", ['title' => 'نقاش طويل جدًا', 'body' => 'بداية معدلة'])->assertOk();
+        $this->as($this->user)->putJson("/api/v1/forum/$notice", ['title' => 'عنوان مخترق'])->assertStatus(403);
+        $reply = DB::table('forum_posts')->where('thread_id', $notice)->value('id');
+        $this->as($this->user)->putJson("/api/v1/forum/posts/$reply", ['body' => 'تم، شكرًا.'])->assertOk();
+        $adminReply = DB::table('forum_posts')->where('thread_id', $thread)->value('id');
+        $this->as($this->user)->putJson("/api/v1/forum/posts/$adminReply", ['body' => 'تعديل رد غيري'])->assertStatus(403);
+        $this->assertNotNull(DB::table('forum_posts')->where('id', $reply)->value('edited_at'));
+
+        // Moderation: pin, lock, move. Members cannot; a locked thread takes no member replies.
+        $this->as($this->user)->putJson("/api/v1/forum/$thread", ['pinned' => true])->assertStatus(403);
+        $other = $this->as($this->user)->postJson('/api/v1/forum', ['title' => 'موضوع أحدث', 'body' => 'نص', 'board_id' => $general])->assertCreated()->json('id');
+        $this->as($this->admin)->putJson("/api/v1/forum/$thread", ['pinned' => true, 'locked' => true])->assertOk();
+        $this->getJson("/api/v1/forum?board=$general")->assertJsonPath('threads.0.id', $thread)->assertJsonPath('threads.0.pinned', true)
+            ->assertJsonPath('threads.1.id', $other);
+        $this->as($this->user)->postJson("/api/v1/forum/$thread/posts", ['body' => 'رد على مغلق'])->assertStatus(403);
+        $this->as($this->admin)->postJson("/api/v1/forum/$thread/posts", ['body' => 'رد الإدارة'])->assertCreated();
+        $this->as($this->admin)->putJson("/api/v1/forum/$other", ['board_id' => $analysis])->assertOk();
+        $this->getJson("/api/v1/forum?board=$analysis")->assertJsonPath('total', 2);
+
+        // Staff remove a single reply; the count follows.
+        $this->as($this->user)->deleteJson("/api/v1/forum/posts/$adminReply")->assertStatus(403);
+        $this->as($this->admin)->deleteJson("/api/v1/forum/posts/$adminReply")->assertOk();
+        $this->assertSame(17, (int) DB::table('forum_threads')->where('id', $thread)->value('reply_count'));
+
+        // Signature, shown with the member's posts.
+        $this->as($this->user)->putJson('/api/v1/forum/signature', ['signature' => 'الصبر مفتاح الربح'])->assertOk();
+        $this->getJson("/api/v1/forum/$other")->assertJsonPath('thread.author.signature', 'الصبر مفتاح الربح');
+        $this->as($this->user)->getJson('/api/v1/me')->assertJsonPath('user.forum_signature', 'الصبر مفتاح الربح');
+    }
+
+    public function test_admin_manages_forum_sections(): void
+    {
+        $this->as($this->user)->postJson('/api/v1/admin/forum/boards', ['name' => 'قسم'])->assertStatus(403);
+        $category = $this->as($this->admin)->postJson('/api/v1/admin/forum/boards', ['name' => 'قسم جديد'])->assertCreated()->json('id');
+        $board = $this->as($this->admin)->postJson('/api/v1/admin/forum/boards', ['name' => 'منتدى جديد', 'description' => 'وصف', 'parent_id' => $category])->assertCreated()->json('id');
+        // A forum cannot sit inside another forum.
+        $this->as($this->admin)->postJson('/api/v1/admin/forum/boards', ['name' => 'فرعي', 'parent_id' => $board])->assertStatus(422);
+        $this->getJson('/api/v1/forum/boards')->assertJsonCount(4, 'categories')
+            ->assertJsonPath('categories.3.name', 'قسم جديد')->assertJsonPath('categories.3.boards.0.description', 'وصف');
+
+        $this->as($this->admin)->putJson("/api/v1/admin/forum/boards/$board", ['name' => 'منتدى معدل', 'staff_only' => true])->assertOk();
+        $this->getJson('/api/v1/forum/boards')->assertJsonPath('categories.3.boards.0.name', 'منتدى معدل')->assertJsonPath('categories.3.boards.0.staff_only', true);
+
+        // Not while it holds something.
+        $thread = $this->as($this->admin)->postJson('/api/v1/forum', ['title' => 'موضوع', 'body' => 'نص', 'board_id' => $board])->assertCreated()->json('id');
+        $this->as($this->admin)->deleteJson("/api/v1/admin/forum/boards/$category")->assertStatus(422);
+        $this->as($this->admin)->deleteJson("/api/v1/admin/forum/boards/$board")->assertStatus(422);
+        $this->as($this->admin)->deleteJson("/api/v1/forum/$thread")->assertOk();
+        $this->as($this->admin)->deleteJson("/api/v1/admin/forum/boards/$board")->assertOk();
+        $this->as($this->admin)->deleteJson("/api/v1/admin/forum/boards/$category")->assertOk();
+        $this->getJson('/api/v1/forum/boards')->assertJsonCount(3, 'categories');
+    }
+
+    private function adminId(): int
+    {
+        return (int) DB::table('users')->where('alias', 'boss')->value('id');
+    }
 }

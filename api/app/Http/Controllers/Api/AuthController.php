@@ -75,6 +75,7 @@ class AuthController extends Controller
             'name' => $user->name,
             'alias' => $user->alias,
             'role' => $user->role ?? 'trader',
+            'forum_signature' => (string) ($user->forum_signature ?? ''),
             'balances' => Ledger::balances($user->id),
         ];
     }

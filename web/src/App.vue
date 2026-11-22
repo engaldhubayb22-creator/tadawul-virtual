@@ -3,12 +3,13 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import AdminPanel from './AdminPanel.vue'
 import BankPage from './BankPage.vue'
 import CompanyPage from './CompanyPage.vue'
+import ForumPage from './ForumPage.vue'
 import AuthModal from './AuthModal.vue'
 import ChartPanel from './ChartPanel.vue'
 import { nearestTicks, tickFor } from './ticks'
 import {
   cancelOrder, connect, loadAccount, loadHolders, loadMyTrades, loadMarketTrades, loadBank, loadPledges, loadIpos, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
-  loadChat, loadThreads, openThread, restoreSession, select, sendChat, setChatRoom,
+  loadChat, restoreSession, select, sendChat, setChatRoom,
   state, subscribeIpo, toast, api, isoTime, DEMO,
 } from './store'
 
@@ -31,7 +32,6 @@ const big = (h) => {
   return sar >= 1e9 ? (sar / 1e9).toFixed(2) + ' مليار' : sar >= 1e6 ? (sar / 1e6).toFixed(2) + ' مليون' : money(h)
 }
 const ratio = (x) => (x == null ? '—' : (x / 100).toFixed(2))
-const forumSymbol = ref(false) // forum filter: false = all threads, true = only the selected company
 const isAdmin = computed(() => state.user?.role === 'admin')
 
 // ---- pages. A visitor sees the market and the public pages only: trading,
@@ -124,7 +124,6 @@ const stamp = (s) => new Date(Date.parse(isoTime(s))).toLocaleString('en-GB', {
   timeZone: state.market.timezone, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 const time = (ms) => new Date(ms).toLocaleTimeString('en-GB', { timeZone: state.market.timezone })
 
-const reloadThreads = () => loadThreads(forumSymbol.value ? state.selected : '').catch(() => {})
 
 // ---- news, whales and top holders: refreshed on a slow timer while visible
 function refreshTab() {
@@ -138,7 +137,6 @@ function refreshTab() {
   if (state.token && (on === 'bank' || state.pledges === null || state.pledges.loans.length)) loadPledges().catch(() => {})
   if (on === 'alltrades') loadMarketTrades().catch(() => {})
   if (on === 'whales') loadWhales().catch(() => {})
-  if (on === 'forum' && !state.thread) reloadThreads()
   if (on === 'ipos') {
     loadIpos().catch(() => {})
     // A listed IPO adds a company to the market: pick it up.
@@ -147,7 +145,7 @@ function refreshTab() {
   if (on === 'market' && tab.value === 'holders' && state.selected) loadHolders(state.selected).catch(() => {})
   if (on === 'holders' && state.selected) loadHolders(state.selected, 100).catch(() => {})
 }
-watch([page, tab, () => state.selected, forumSymbol], refreshTab)
+watch([page, tab, () => state.selected], refreshTab)
 setInterval(refreshTab, 10000)
 // The market-wide trades page follows the market closely while it is open.
 setInterval(() => { if (page.value === 'alltrades') loadMarketTrades().catch(() => {}) }, 2000)
@@ -168,25 +166,6 @@ async function say() {
   const text = chatText.value.trim()
   if (!text) return
   try { await sendChat(text); if (state.token) chatText.value = '' } catch (e) { toast(e.message, 'bad') }
-}
-
-// ---- forum
-const draft = reactive({ title: '', body: '', here: true, reply: '' })
-async function postThread() {
-  if (!state.token) { state.showAuth = true; return }
-  try {
-    const r = await api('POST', '/forum', { title: draft.title, body: draft.body, symbol: draft.here ? state.selected : null })
-    draft.title = ''; draft.body = ''
-    await openThread(r.id)
-  } catch (e) { toast(e.message, 'bad') }
-}
-async function postReply() {
-  if (!state.token) { state.showAuth = true; return }
-  try {
-    await api('POST', `/forum/${state.thread.thread.id}/posts`, { body: draft.reply })
-    draft.reply = ''
-    await openThread(state.thread.thread.id)
-  } catch (e) { toast(e.message, 'bad') }
 }
 
 const fin = computed(() => state.financing)
@@ -252,6 +231,7 @@ onMounted(async () => {
   </div>
   <AdminPanel v-if="page === 'admin' && isAdmin" />
   <CompanyPage v-else-if="page === 'companies'" @trade="show" />
+  <ForumPage v-else-if="page === 'forum'" />
   <main v-else-if="page === 'market'" class="grid">
     <!-- watchlist -->
     <section class="panel list">
@@ -560,42 +540,6 @@ onMounted(async () => {
           <tr v-if="!state.whales.length"><td colspan="6" class="empty">لا يوجد متداولون بعد</td></tr>
         </tbody>
       </table></div>
-    </section>
-    <section v-else-if="page === 'forum'" class="panel">
-      <h2>المنتدى</h2>
-      <div class="forum">
-        <template v-if="state.thread">
-          <button class="ghost" @click="openThread(null); reloadThreads()">→ كل المواضيع</button>
-          <h3>{{ state.thread.thread.title }} <small class="muted">{{ state.thread.thread.alias }}<template v-if="state.thread.thread.company"> · {{ state.thread.thread.company }}</template></small></h3>
-          <p class="post">{{ state.thread.thread.body }}</p>
-          <p v-for="p in state.thread.posts" :key="p.id" class="post reply"><b>{{ p.alias }}</b> {{ p.body }}</p>
-          <form v-if="state.user" class="row" @submit.prevent="postReply">
-            <label class="grow">ردّك<input v-model="draft.reply" required maxlength="10000" /></label>
-            <button class="primary small">إرسال الرد</button>
-          </form>
-        </template>
-        <template v-else>
-          <div class="row">
-            <label class="check"><input v-model="forumSymbol" type="checkbox" /> مواضيع {{ current?.name }} فقط</label>
-          </div>
-          <table>
-            <tbody>
-              <tr v-for="t in state.threads" :key="t.id" @click="openThread(t.id)">
-                <td><b>{{ t.title }}</b><small>{{ t.alias }}<template v-if="t.company"> · {{ t.company }}</template></small></td>
-                <td class="num muted">{{ t.reply_count }} رد</td>
-              </tr>
-              <tr v-if="!state.threads.length"><td colspan="2" class="empty">لا توجد مواضيع بعد. اكتب أول تحليل.</td></tr>
-            </tbody>
-          </table>
-          <form v-if="state.user" class="row" @submit.prevent="postThread">
-            <label>العنوان<input v-model="draft.title" required minlength="3" maxlength="150" /></label>
-            <label class="grow">التحليل<input v-model="draft.body" required maxlength="10000" /></label>
-            <label class="check"><input v-model="draft.here" type="checkbox" /> عن {{ current?.name }}</label>
-            <button class="primary small">نشر</button>
-          </form>
-          <p v-else class="hint">سجّل الدخول لتنشر تحليلًا أو تردّ.</p>
-        </template>
-      </div>
     </section>
   </main>
   </div>

@@ -29,8 +29,6 @@ export const state = reactive({
   news: [],
   chatRoom: 'general', // 'general' or 'symbol' (the selected company's room)
   chat: [],
-  threads: [],
-  thread: null,
   financing: null,
   pledges: null,
   ipos: [],
@@ -203,14 +201,6 @@ export function setChatRoom(kind) {
 export async function sendChat(text) {
   if (!state.token) { state.showAuth = true; return }
   await api('POST', '/chat/' + chatRoomName(), { text })
-}
-
-export async function loadThreads(symbol) {
-  state.threads = (await api('GET', '/forum' + (symbol ? '?symbol=' + symbol : ''))).threads
-}
-
-export async function openThread(id) {
-  state.thread = id == null ? null : await api('GET', '/forum/' + id)
 }
 
 export async function loadFinancing() {
