@@ -154,6 +154,24 @@ class MarketController extends Controller
         return response()->json(['symbol' => $company->symbol, 'trades' => $rows]);
     }
 
+    /**
+     * Executions across the whole market, newest first. With ?after=<id> it
+     * returns only trades newer than that id, so a page that is already open
+     * can keep itself up to date cheaply.
+     */
+    public function allTrades(Request $request): JsonResponse
+    {
+        $limit = min(max((int) $request->query('limit', 100), 1), 300);
+        $after = max((int) $request->query('after', 0), 0);
+
+        $rows = DB::table('trades as t')->join('companies as c', 'c.id', '=', 't.company_id')
+            ->when($after > 0, fn ($q) => $q->where('t.id', '>', $after))
+            ->orderByDesc('t.id')->limit($limit)
+            ->get(['t.id', 'c.symbol', 'c.name', 't.price', 't.qty', 't.taker_side', 't.executed_at']);
+
+        return response()->json(['trades' => $rows]);
+    }
+
     public function candles(Request $request, string $symbol): JsonResponse
     {
         $company = $this->company($symbol);

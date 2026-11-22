@@ -129,6 +129,50 @@ class OrderController extends Controller
         }, $rows)]);
     }
 
+    /**
+     * Bank page: the balances and an account statement. The statement lists
+     * every entry that moved money into or out of the trader's own money
+     * (cash plus the part held for open orders). Moves between those two are
+     * left out, since they do not change what the trader has.
+     */
+    public function bank(Request $request): JsonResponse
+    {
+        $userId = $request->user()->id;
+        $limit = min(max((int) $request->query('limit', 200), 1), 500);
+        $balances = Ledger::balances($userId);
+
+        $rows = DB::select(<<<'SQL'
+            WITH mine AS (
+                SELECT id FROM ledger_accounts WHERE user_id = :me AND kind IN ('cash', 'reserved')),
+            moves AS (
+                SELECT e.id, e.ref_type, e.ref_id, e.created_at,
+                       CASE WHEN e.credit_account_id IN (SELECT id FROM mine) THEN e.amount ELSE -e.amount END AS amount
+                FROM ledger_entries e
+                WHERE (e.debit_account_id IN (SELECT id FROM mine)) <> (e.credit_account_id IN (SELECT id FROM mine)))
+            SELECT m.id, m.ref_type, m.amount, m.created_at, c.symbol, c.name,
+                   :total::bigint - COALESCE(SUM(m.amount) OVER (
+                       ORDER BY m.id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS balance_after
+            FROM moves m
+            LEFT JOIN trades t ON m.ref_type IN ('trade', 'commission') AND t.id = m.ref_id
+            LEFT JOIN companies c ON c.id = t.company_id
+            ORDER BY m.id DESC
+            LIMIT :limit
+            SQL, ['me' => $userId, 'total' => $balances['cash'] + $balances['reserved'], 'limit' => $limit]);
+
+        return response()->json([
+            'balances' => $balances,
+            'statement' => array_map(fn ($r) => [
+                'id' => (int) $r->id,
+                'type' => $r->ref_type,
+                'amount' => (int) $r->amount,
+                'balance_after' => (int) $r->balance_after,
+                'symbol' => $r->symbol,
+                'name' => $r->name,
+                'at' => $r->created_at,
+            ], $rows),
+        ]);
+    }
+
     public function portfolio(Request $request): JsonResponse
     {
         $rows = DB::select(<<<'SQL'

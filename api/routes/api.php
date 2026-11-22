@@ -18,6 +18,7 @@ Route::prefix('v1')->group(function () {
     });
 
     Route::get('market', [MarketController::class, 'index']);
+    Route::get('market-trades', [MarketController::class, 'allTrades']);
     Route::get('news', [MarketController::class, 'news']);
     Route::get('leaderboard', [MarketController::class, 'leaderboard']);
     Route::get('ipos', [IpoController::class, 'index']);
@@ -34,6 +35,7 @@ Route::prefix('v1')->group(function () {
         Route::get('me', [AuthController::class, 'me']);
         Route::get('portfolio', [OrderController::class, 'portfolio']);
         Route::get('trades', [OrderController::class, 'trades']);
+        Route::get('bank', [OrderController::class, 'bank']);
         Route::post('ipos/{id}/subscribe', [IpoController::class, 'subscribe']);
         Route::post('chat/{room}', [CommunityController::class, 'chatSend'])->middleware('throttle:chat');
         Route::delete('chat/messages/{id}', [CommunityController::class, 'chatDelete']);

@@ -268,6 +268,41 @@ class ApiTest extends TestCase
             ->assertJsonPath('trades.0.net', 26959);
         $this->app['auth']->forgetGuards();
         $this->withToken($other['token'])->getJson('/api/v1/trades')->assertOk()->assertJsonCount(0, 'trades');
+
+        // The whole market's trades are public and can be read incrementally.
+        $this->app['auth']->forgetGuards();
+        $this->getJson('/api/v1/market-trades')->assertOk()
+            ->assertJsonCount(1, 'trades')
+            ->assertJsonPath('trades.0.id', $tradeId)
+            ->assertJsonPath('trades.0.symbol', '2222')
+            ->assertJsonPath('trades.0.taker_side', 'buy');
+        $this->getJson('/api/v1/market-trades?after='.$tradeId)->assertOk()->assertJsonCount(0, 'trades');
+    }
+
+    public function test_bank_statement_shows_money_moves_with_running_balance(): void
+    {
+        $res = $this->registerUser();
+        $userId = $res['user']['id'];
+        $cash = DB::table('ledger_accounts')->where('user_id', $userId)->where('kind', 'cash')->value('id');
+        $held = DB::table('ledger_accounts')->where('user_id', $userId)->where('kind', 'reserved')->value('id');
+        $commission = DB::table('ledger_accounts')->whereNull('user_id')->where('kind', 'sys_commission')->value('id');
+        DB::transaction(function () use ($cash, $held, $commission) {
+            \App\Services\Ledger::move($cash, $held, 500000, 'order_reserve', 0); // internal: not in the statement
+            \App\Services\Ledger::move($held, $commission, 300, 'commission', 0);
+        });
+
+        $this->getJson('/api/v1/bank')->assertStatus(401);
+        // Starting balance 100,000.00, then 3.00 of commission taken from the held money.
+        $this->withToken($res['token'])->getJson('/api/v1/bank')->assertOk()
+            ->assertJsonPath('balances.cash', 9500000)
+            ->assertJsonPath('balances.reserved', 499700)
+            ->assertJsonCount(2, 'statement')
+            ->assertJsonPath('statement.0.type', 'commission')
+            ->assertJsonPath('statement.0.amount', -300)
+            ->assertJsonPath('statement.0.balance_after', 9999700)
+            ->assertJsonPath('statement.1.type', 'starting_balance')
+            ->assertJsonPath('statement.1.amount', 10000000)
+            ->assertJsonPath('statement.1.balance_after', 10000000);
     }
 
     public function test_leaderboard_ranks_traders_by_net_worth_and_hides_bots(): void

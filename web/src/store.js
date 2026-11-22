@@ -23,6 +23,8 @@ export const state = reactive({
   orders: [],
   positions: [],
   myTrades: [],
+  marketTrades: [],
+  statement: [],
   netWorth: 0,
   news: [],
   chatRoom: 'general', // 'general' or 'symbol' (the selected company's room)
@@ -113,7 +115,28 @@ export async function loadAccount() {
   loadFinancing().catch(() => {})
 }
 
-// The trader's own executions, for the portfolio page.
+// Executions across the whole market. After the first load it asks only for
+// trades newer than the newest one it has.
+let loadingMarketTrades = false
+export async function loadMarketTrades() {
+  if (loadingMarketTrades) return
+  loadingMarketTrades = true
+  try {
+    const after = state.marketTrades[0]?.id ?? 0
+    const rows = (await api('GET', '/market-trades' + (after ? `?after=${after}` : ''))).trades
+    if (rows.length) state.marketTrades = [...rows, ...state.marketTrades].slice(0, 300)
+  } finally { loadingMarketTrades = false }
+}
+
+// Bank page: balances and the account statement.
+export async function loadBank() {
+  if (!state.token) return
+  const data = await api('GET', '/bank')
+  state.balances = data.balances
+  state.statement = data.statement
+}
+
+// The trader's own executions.
 export async function loadMyTrades() {
   if (!state.token) return
   state.myTrades = (await api('GET', '/trades')).trades
@@ -235,6 +258,7 @@ export function logout(callServer = true) {
   state.orders = []
   state.positions = []
   state.myTrades = []
+  state.statement = []
   state.financing = null
   saved.set('token', null)
   if (ws) ws.close() // reconnects as a guest, dropping the private channel

@@ -203,7 +203,7 @@ export async function demoApi(method, path, body) {
     }
     case 'POST register': case 'POST login':
       if (!body.mobile || !/^05\d{8}$/.test(body.mobile)) throw new Error('رقم الجوال يجب أن يكون بصيغة 05xxxxxxxx')
-      if (!me.user) { me.user = { name: body.name || 'متداول', alias: body.alias || 'متداول_' + body.mobile.slice(-4) }; me.cash = START_CASH }
+      if (!me.user) { me.user = { name: body.name || 'متداول', alias: body.alias || 'متداول_' + body.mobile.slice(-4) }; me.cash = START_CASH; me.since = new Date().toISOString() }
       return { token: 'demo', user: profile(), starting_balance: START_CASH }
     case 'POST logout': return {}
     case 'GET me': need(); return { user: profile() }
@@ -215,6 +215,20 @@ export async function demoApi(method, path, body) {
       return { balances: { cash: me.cash, reserved: me.reserved }, positions, market_value: mv, debt: debt(), net_worth: me.cash + me.reserved + mv - debt() }
     }
     case 'GET trades': need(); return { trades: me.trades }
+    case 'GET market-trades': {
+      const after = Number(new URLSearchParams(query).get('after') ?? 0)
+      const rows = Object.values(co).flatMap((x) => x.trades.map((t) => ({ id: t.id, symbol: x.symbol, name: x.name, price: t.price,
+        qty: t.qty, taker_side: t.taker_side, executed_at: new Date(t.at).toISOString() })))
+      return { trades: rows.filter((t) => t.id > after).sort((a, b) => b.id - a.id).slice(0, 100) }
+    }
+    case 'GET bank': {
+      need()
+      let balance = me.cash + me.reserved
+      const statement = me.trades.map((t) => ({ id: t.id, type: 'trade', amount: t.side === 'buy' ? -t.value : t.value, symbol: t.symbol, name: t.name, at: t.executed_at }))
+      statement.push({ id: 0, type: 'starting_balance', amount: START_CASH, symbol: null, name: null, at: me.since })
+      for (const s of statement) { s.balance_after = balance; balance -= s.amount }
+      return { balances: { cash: me.cash, reserved: me.reserved }, statement }
+    }
     case 'GET orders': need(); return { orders: query.includes('status=open') ? me.orders : [] }
     case 'POST orders': return placeOrder(body)
     case 'DELETE orders/*': need(); return cancelOrder(Number(p[1]))

@@ -5,7 +5,7 @@ import AuthModal from './AuthModal.vue'
 import ChartPanel from './ChartPanel.vue'
 import { nearestTicks, tickFor } from './ticks'
 import {
-  cancelOrder, connect, loadAccount, loadHolders, loadMyTrades, loadIpos, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
+  cancelOrder, connect, loadAccount, loadHolders, loadMyTrades, loadMarketTrades, loadBank, loadIpos, loadMarket, loadNews, loadWhales, logout, money, pct, placeOrder, qty,
   loadChat, loadThreads, openThread, repayFinancing, requestFinancing, restoreSession, select, sendChat, setChatRoom,
   state, subscribeIpo, toast, api, isoTime, DEMO,
 } from './store'
@@ -35,14 +35,22 @@ const isAdmin = computed(() => state.user?.role === 'admin')
 // ---- pages. A visitor sees the market and the public pages only: trading,
 // the portfolio and financing appear after signing in.
 const page = ref('market')
-const pages = computed(() => [
-  { id: 'market', label: 'السوق' },
-  ...(state.user ? [{ id: 'portfolio', label: 'محفظتي' }, { id: 'financing', label: 'التمويل' }] : []),
-  { id: 'ipos', label: 'الاكتتابات' },
-  { id: 'whales', label: 'الهوامير' },
-  { id: 'forum', label: 'المنتدى' },
-  ...(isAdmin.value ? [{ id: 'admin', label: 'لوحة الإدارة' }] : []),
+const menu = computed(() => [
+  { title: 'السوق', items: [
+    { id: 'market', label: 'شاشة السوق' },
+    { id: 'alltrades', label: 'صفقات السوق' },
+    { id: 'ipos', label: 'الاكتتابات' }] },
+  ...(state.user ? [{ title: 'حسابي', items: [
+    { id: 'portfolio', label: 'محفظتي' },
+    { id: 'orders', label: 'أوامري' },
+    { id: 'mytrades', label: 'صفقاتي' },
+    { id: 'bank', label: 'البنك' }] }] : []),
+  { title: 'المجتمع', items: [
+    { id: 'whales', label: 'الهوامير' },
+    { id: 'forum', label: 'المنتدى' }] },
+  ...(isAdmin.value ? [{ title: 'الإدارة', items: [{ id: 'admin', label: 'لوحة الإدارة' }] }] : []),
 ])
+const pages = computed(() => menu.value.flatMap((g) => g.items))
 watch(pages, (list) => { if (!list.some((p) => p.id === page.value)) page.value = 'market' })
 function show(symbol) { select(symbol); page.value = 'market' }
 // Panel under the chart on the market page: my open orders or the top holders.
@@ -119,8 +127,10 @@ function refreshTab() {
   // Allocations and refunds change the account without any order event, so
   // the account tabs reload on their own too.
   const on = page.value
-  if (state.token && ['market', 'portfolio', 'ipos', 'financing'].includes(on)) loadAccount().catch(() => {})
-  if (on === 'portfolio') loadMyTrades().catch(() => {})
+  if (state.token && ['market', 'portfolio', 'orders', 'ipos', 'bank'].includes(on)) loadAccount().catch(() => {})
+  if (on === 'mytrades') loadMyTrades().catch(() => {})
+  if (on === 'bank') loadBank().catch(() => {})
+  if (on === 'alltrades') loadMarketTrades().catch(() => {})
   if (on === 'whales') loadWhales().catch(() => {})
   if (on === 'forum' && !state.thread) reloadThreads()
   if (on === 'ipos') {
@@ -132,6 +142,22 @@ function refreshTab() {
 }
 watch([page, tab, () => state.selected, forumSymbol], refreshTab)
 setInterval(refreshTab, 10000)
+// The market-wide trades page follows the market closely while it is open.
+setInterval(() => { if (page.value === 'alltrades') loadMarketTrades().catch(() => {}) }, 2000)
+
+// ---- my trades: totals over the listed executions
+const tradeTotals = computed(() => {
+  const t = { buy: 0, sell: 0, commission: 0 }
+  for (const x of state.myTrades) { t[x.side] += x.value; t.commission += x.commission }
+  return t
+})
+// ---- bank statement wording
+const ENTRY = {
+  starting_balance: 'الرصيد الابتدائي', grant: 'إيداع', commission: 'عمولة تداول',
+  financing_grant: 'صرف تمويل', financing_repay: 'سداد تمويل', ipo_allocation: 'تخصيص اكتتاب',
+}
+const entryLabel = (e) => (e.type === 'trade' ? (e.amount > 0 ? 'بيع أسهم' : 'شراء أسهم') : ENTRY[e.type] ?? e.type)
+const signed = (h) => (h > 0 ? '+' : h < 0 ? '-' : '') + money(Math.abs(h))
 setInterval(() => loadNews().catch(() => {}), 30000)
 // ---- chat
 const side = ref('tape') // bottom-left panel: 'tape' or 'chat'
@@ -212,9 +238,14 @@ onMounted(async () => {
       <button v-else class="primary small" @click="state.showAuth = true">دخول / تسجيل</button>
     </div>
   </header>
-  <nav class="nav">
-    <button v-for="p in pages" :key="p.id" :class="{ on: page === p.id }" @click="page = p.id">{{ p.label }}</button>
+  <div class="shell">
+  <nav class="menu">
+    <div v-for="g in menu" :key="g.title" class="group">
+      <h3>{{ g.title }}</h3>
+      <button v-for="p in g.items" :key="p.id" :class="{ on: page === p.id }" @click="page = p.id">{{ p.label }}</button>
+    </div>
   </nav>
+  <div class="content">
 
   <div v-if="latestNews.length && page === 'market'" class="newsbar">
     <b>الأخبار</b>
@@ -409,8 +440,10 @@ onMounted(async () => {
         </tbody>
       </table></div>
       </section>
+    </template>
+    <template v-else-if="page === 'orders' && state.user">
       <section class="panel">
-        <h2>أوامري المفتوحة</h2>
+        <h2>أوامري المفتوحة <small>الأوامر التي لم تُنفذ كاملة بعد</small></h2>
         <div class="scroll"><table>
         <thead><tr><th>السهم</th><th>الاتجاه</th><th>السعر</th><th>الكمية</th><th>المنفّذ</th><th>المحجوز له</th><th></th></tr></thead>
         <tbody>
@@ -425,8 +458,16 @@ onMounted(async () => {
         </tbody>
       </table></div>
       </section>
+    </template>
+    <template v-else-if="page === 'mytrades' && state.user">
+      <div class="cards">
+        <div class="card"><span>عدد الصفقات</span><b class="num">{{ state.myTrades.length }}</b></div>
+        <div class="card"><span>إجمالي الشراء</span><b class="num">{{ money(tradeTotals.buy) }}</b></div>
+        <div class="card"><span>إجمالي البيع</span><b class="num">{{ money(tradeTotals.sell) }}</b></div>
+        <div class="card"><span>العمولات المدفوعة</span><b class="num">{{ money(tradeTotals.commission) }}</b></div>
+      </div>
       <section class="panel">
-        <h2>عملياتي المنفذة <small>كل تنفيذ بسعره وعمولته، الأحدث أولًا</small></h2>
+        <h2>صفقاتي <small>كل تنفيذ بسعره وعمولته، الأحدث أولًا</small></h2>
         <div class="scroll"><table>
           <thead><tr><th>الوقت</th><th>السهم</th><th>العملية</th><th>الكمية</th><th>سعر التنفيذ</th><th>القيمة</th><th>العمولة</th><th>الصافي</th><th>رقم الأمر</th></tr></thead>
           <tbody>
@@ -444,8 +485,15 @@ onMounted(async () => {
         </table></div>
       </section>
     </template>
-    <section v-else-if="page === 'financing' && state.user" class="panel">
-      <h2>التمويل</h2>
+    <template v-else-if="page === 'bank' && state.user">
+      <div class="cards">
+        <div class="card"><span>النقد المتاح</span><b class="num">{{ money(state.balances.cash) }}</b></div>
+        <div class="card"><span>محجوز في أوامر</span><b class="num">{{ money(state.balances.reserved) }}</b></div>
+        <div class="card"><span>التمويل المستحق</span><b class="num">{{ money(fin?.debt ?? 0) }}</b></div>
+        <div class="card"><span>صافي الثروة</span><b class="num">{{ money(state.netWorth) }}</b></div>
+      </div>
+      <section class="panel">
+        <h2>التمويل</h2>
       <div class="fin">
         <template v-if="fin">
           <p class="muted terms">تمويل برسم ثابت {{ (fin.terms.fee_bps / 100).toFixed(2) }}% يُعرف عند الطلب ولا يزيد، لمدة {{ fin.terms.days }} يومًا.
@@ -466,6 +514,40 @@ onMounted(async () => {
           <p v-else class="empty">التمويل متوقف حاليًا.</p>
         </template>
       </div>
+      </section>
+      <section class="panel">
+        <h2>كشف الحساب <small>كل مبلغ دخل حسابك أو خرج منه، الأحدث أولًا</small></h2>
+        <div class="scroll"><table>
+          <thead><tr><th>الوقت</th><th>البيان</th><th>السهم</th><th>المبلغ</th><th>الرصيد بعده</th></tr></thead>
+          <tbody>
+            <tr v-for="e in state.statement" :key="e.id">
+              <td class="num muted">{{ stamp(e.at) }}</td>
+              <td>{{ entryLabel(e) }}</td>
+              <td><template v-if="e.name"><b>{{ e.name }}</b><small class="num">{{ e.symbol }}</small></template><span v-else class="muted">—</span></td>
+              <td class="num" :class="e.amount > 0 ? 'up' : 'down'">{{ signed(e.amount) }}</td>
+              <td class="num">{{ money(e.balance_after) }}</td>
+            </tr>
+            <tr v-if="!state.statement.length"><td colspan="5" class="empty">لا توجد حركات بعد</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+    </template>
+    <section v-else-if="page === 'alltrades'" class="panel">
+      <h2>صفقات السوق <small>كل الصفقات المنفذة في السوق، تتحدث تلقائيًا</small></h2>
+      <div class="scroll"><table>
+        <thead><tr><th>الوقت</th><th>الشركة</th><th>السعر</th><th>الكمية</th><th>القيمة</th><th>النوع</th></tr></thead>
+        <tbody>
+          <tr v-for="t in state.marketTrades" :key="t.id" class="fresh" @click="show(t.symbol)">
+            <td class="num muted">{{ stamp(t.executed_at) }}</td>
+            <td><b>{{ t.name }}</b><small class="num">{{ t.symbol }}</small></td>
+            <td class="num" :class="t.taker_side === 'buy' ? 'up' : 'down'">{{ money(t.price) }}</td>
+            <td class="num">{{ qty(t.qty) }}</td>
+            <td class="num">{{ money(t.price * t.qty) }}</td>
+            <td :class="t.taker_side === 'buy' ? 'up' : 'down'">{{ t.taker_side === 'buy' ? 'شراء' : 'بيع' }}</td>
+          </tr>
+          <tr v-if="!state.marketTrades.length"><td colspan="6" class="empty">لا توجد صفقات بعد</td></tr>
+        </tbody>
+      </table></div>
     </section>
     <section v-else-if="page === 'ipos'" class="panel">
       <h2>الاكتتابات</h2>
@@ -546,6 +628,8 @@ onMounted(async () => {
       </div>
     </section>
   </main>
+  </div>
+  </div>
 
   <div class="toasts"><div v-for="t in state.toasts" :key="t.id" class="toast" :class="t.kind">{{ t.text }}</div></div>
   <AuthModal v-if="state.showAuth" />
