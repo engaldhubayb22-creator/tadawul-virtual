@@ -6,3 +6,6 @@ node_modules/
 
 deploy/.env
 deploy/.env.local
+
+# Local Redis snapshot
+dump.rdb
