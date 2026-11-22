@@ -7,7 +7,9 @@ import { api, isoTime, money, state, toast } from './store'
 const data = ref(null)
 const settings = reactive({})
 const edits = reactive({}) // per symbol: fields being edited
-const news = reactive({ symbol: '', title: '', impact: 0, minutes: 15 })
+// kind: 'up' (positive, the price rises), 'down' (negative, it falls) or 'none'; impact is the size in percent.
+const news = reactive({ symbol: '', title: '', kind: 'up', impact: 3, minutes: 15 })
+const newsImpact = () => (news.kind === 'none' ? 0 : Math.round(Math.abs(Number(news.impact)) * 100) * (news.kind === 'up' ? 1 : -1))
 const ipo = reactive({ symbol: '', name: '', sector: '', price: '', tick: 0.01, offered: 100000, maker: 500000, min: 10, max: 5000, minutes: 60 })
 const ipos = ref([])
 const loadIpos = async () => { try { ipos.value = (await api('GET', '/ipos')).ipos } catch { /* shown on next refresh */ } }
@@ -108,7 +110,8 @@ const startScenario = (c) => {
 const stopScenario = (c) => call('PUT', '/bots/' + c.symbol, { target_price: null })
 const toggleHalt = (c) => call('PUT', `/companies/${c.symbol}/status`, { status: c.status === 'halted' ? 'trading' : 'halted' })
 const publish = async () => {
-  await call('POST', '/news', { symbol: news.symbol, title: news.title, impact_bps: Math.round(Number(news.impact) * 100), minutes: news.minutes }, 'نُشر الخبر')
+  await call('POST', '/news', { symbol: news.symbol, title: news.title, impact_bps: newsImpact(), minutes: news.minutes },
+    news.kind === 'up' ? 'نُشر الخبر الإيجابي' : news.kind === 'down' ? 'نُشر الخبر السلبي' : 'نُشر الخبر')
   news.title = ''
 }
 
@@ -282,12 +285,22 @@ onBeforeUnmount(() => clearInterval(timer))
       <form class="row" @submit.prevent="publish">
         <label>الشركة<select v-model="news.symbol"><option v-for="c in data.companies" :key="c.symbol" :value="c.symbol">{{ c.name }}</option></select></label>
         <label class="grow">العنوان<input v-model="news.title" required maxlength="200" /></label>
-        <label>الأثر على السعر %<input v-model="news.impact" type="number" min="-10" max="10" step="0.1" dir="ltr" /></label>
-        <label>خلال (دقيقة)<input v-model.number="news.minutes" type="number" min="1" max="1440" dir="ltr" /></label>
+        <label>نوع الخبر<select v-model="news.kind">
+          <option value="up">خبر إيجابي (يرفع السعر)</option>
+          <option value="down">خبر سلبي (ينزّل السعر)</option>
+          <option value="none">خبر محايد (بدون أثر)</option>
+        </select></label>
+        <template v-if="news.kind !== 'none'">
+          <label>{{ news.kind === 'up' ? 'نسبة الارتفاع %' : 'نسبة النزول %' }}<input v-model="news.impact" type="number" min="0.1" max="10" step="0.1" required dir="ltr" /></label>
+          <label>خلال (دقيقة)<input v-model.number="news.minutes" type="number" min="1" max="1440" dir="ltr" /></label>
+        </template>
         <button class="primary">نشر</button>
       </form>
+      <p class="muted">الخبر الإيجابي يخلّي صانع السوق يرفع السهم بالنسبة المحددة تدريجيًا خلال المدة، والسلبي ينزّله. الحركة تتم بأوامر فعلية في السوق وضمن حدود اليوم.</p>
       <ul class="newslist">
-        <li v-for="n in data.news" :key="n.id">{{ n.title }}
+        <li v-for="n in data.news" :key="n.id">
+          <span :class="n.impact_bps > 0 ? 'up' : n.impact_bps < 0 ? 'down' : 'muted'">{{ n.impact_bps > 0 ? 'إيجابي' : n.impact_bps < 0 ? 'سلبي' : 'محايد' }}</span>
+          {{ n.title }}
           <span class="num" :class="n.impact_bps > 0 ? 'up' : n.impact_bps < 0 ? 'down' : 'muted'">{{ (n.impact_bps / 100).toFixed(1) }}%</span></li>
       </ul>
     </section>
